@@ -70,12 +70,12 @@ export default {
         richBlocks = htmlToRichBlocks(parsed.textHtml, inlineImages);
         bodyNodes = htmlToTelegramNodes(parsed.textHtml, inlineImages);
       } else if (parsed.textPlain) {
-        richBlocks = plainTextToRichBlocks(parsed.textPlain);
-        bodyNodes = plainTextToTelegramNodes(parsed.textPlain);
+        richBlocks = smartPlainTextToRichBlocks(parsed.textPlain);
+        bodyNodes = smartPlainTextToTelegramNodes(parsed.textPlain);
       } else {
         const emptyMsg = parsed.attachments.length ? '(Email ini hanya berisi lampiran, tanpa teks)' : '(tidak ada isi teks)';
         richBlocks = [{ type: 'paragraph', text: emptyMsg }];
-        bodyNodes = plainTextToTelegramNodes(emptyMsg);
+        bodyNodes = smartPlainTextToTelegramNodes(emptyMsg);
       }
 
       const headerTableBlock = buildEmailHeaderRichBlock(to, from, subject, parsed.attachments.length);
@@ -136,11 +136,15 @@ export default {
         : parsed.attachments.length
           ? '(Email ini hanya berisi lampiran, tanpa teks)'
           : '(tidak ada isi teks)';
+      const savedRichBlocks = emailBlocks.slice(0, 35);
+      const savedFallbackHtml = (headerHtml + chunks.slice(0, 2).join('\n\n')).slice(0, 3800);
       await pushInboxEntry(env, chatId, {
         address: to,
         from,
         subject,
         snippet,
+        richBlocks: savedRichBlocks,
+        fallbackHtml: savedFallbackHtml,
         receivedAt: Date.now(),
         hasAttachment: parsed.attachments.length > 0,
       });
@@ -1137,32 +1141,30 @@ function viewAddressInboxDetail(addresses, addrIdx, inbox, page, filteredIdx) {
   const item = filtered[filteredIdx];
   const attachNote = item.hasAttachment ? '📎 Ada lampiran (terkirim terpisah)' : 'Tidak ada';
 
-  const blocks = [
-    { type: 'section_heading', text: '📧 Detail Email' },
-    {
-      type: 'table',
-      is_bordered: true,
-      is_striped: true,
-      cells: [
-        [{ text: 'Ke', is_header: true }, { text: item.address }],
-        [{ text: 'Dari', is_header: true }, { text: item.from }],
-        [{ text: 'Waktu', is_header: true }, { text: formatDateTime(item.receivedAt) }],
-        [{ text: 'Subjek', is_header: true }, { text: item.subject }],
-        [{ text: 'Lampiran', is_header: true }, { text: attachNote }],
-      ],
-    },
-    { type: 'divider' },
-    { type: 'block_quotation', text: item.snippet || '(tidak ada cuplikan isi)' },
-  ];
+  let blocks = [];
+  let fallbackHtml = '';
 
-  const fallbackHtml =
-    `📧 <b>Detail Email</b>\n\n` +
-    `<b>Ke:</b> <code>${escapeTelegramHtml(item.address)}</code>\n` +
-    `<b>Dari:</b> ${escapeTelegramHtml(item.from)}\n` +
-    `<b>Waktu:</b> ${escapeTelegramHtml(formatDateTime(item.receivedAt))}\n` +
-    `<b>Subjek:</b> ${escapeTelegramHtml(item.subject)}\n` +
-    (item.hasAttachment ? `📎 <i>Ada lampiran (sudah dikirim terpisah)</i>\n\n` : '\n') +
-    `<blockquote>${escapeTelegramHtml(item.snippet || '(tidak ada isi)')}</blockquote>`;
+  if (item.richBlocks && Array.isArray(item.richBlocks) && item.richBlocks.length) {
+    blocks = item.richBlocks;
+    fallbackHtml = item.fallbackHtml || '';
+  } else {
+    const headerTableBlock = buildEmailHeaderRichBlock(item.address, item.from, item.subject, item.hasAttachment ? 1 : 0);
+    const bodyBlocks = smartPlainTextToRichBlocks(item.snippet || '(tidak ada isi)');
+    blocks = [
+      { type: 'section_heading', text: '📧 Detail Email' },
+      headerTableBlock,
+      { type: 'divider' },
+      ...bodyBlocks,
+    ];
+    fallbackHtml =
+      `📧 <b>Detail Email</b>\n\n` +
+      `<b>Ke:</b> <code>${escapeTelegramHtml(item.address)}</code>\n` +
+      `<b>Dari:</b> ${escapeTelegramHtml(item.from)}\n` +
+      `<b>Waktu:</b> ${escapeTelegramHtml(formatDateTime(item.receivedAt))}\n` +
+      `<b>Subjek:</b> ${escapeTelegramHtml(item.subject)}\n` +
+      (item.hasAttachment ? `📎 <i>Ada lampiran (sudah dikirim terpisah)</i>\n\n` : '\n') +
+      `<blockquote>${escapeTelegramHtml(item.snippet || '(tidak ada isi)')}</blockquote>`;
+  }
 
   const rows = [
     [{ text: '⬅️ Kembali ke Email Masuk', callback_data: `ai:${addrIdx}:${page}` }],
@@ -1329,32 +1331,30 @@ function viewInboxDetail(inbox, idx) {
   const page = Math.floor(idx / INBOX_PAGE_SIZE);
   const attachNote = item.hasAttachment ? '📎 Ada lampiran (terkirim terpisah)' : 'Tidak ada';
 
-  const blocks = [
-    { type: 'section_heading', text: `📧 Detail Email #${idx + 1}` },
-    {
-      type: 'table',
-      is_bordered: true,
-      is_striped: true,
-      cells: [
-        [{ text: 'Ke', is_header: true }, { text: item.address }],
-        [{ text: 'Dari', is_header: true }, { text: item.from }],
-        [{ text: 'Waktu', is_header: true }, { text: formatDateTime(item.receivedAt) }],
-        [{ text: 'Subjek', is_header: true }, { text: item.subject }],
-        [{ text: 'Lampiran', is_header: true }, { text: attachNote }],
-      ],
-    },
-    { type: 'divider' },
-    { type: 'block_quotation', text: item.snippet || '(tidak ada cuplikan isi)' },
-  ];
+  let blocks = [];
+  let fallbackHtml = '';
 
-  const fallbackHtml =
-    `📧 <b>Detail Email #${idx + 1}</b>\n\n` +
-    `<b>Ke:</b> <code>${escapeTelegramHtml(item.address)}</code>\n` +
-    `<b>Dari:</b> ${escapeTelegramHtml(item.from)}\n` +
-    `<b>Waktu:</b> ${escapeTelegramHtml(formatDateTime(item.receivedAt))}\n` +
-    `<b>Subjek:</b> ${escapeTelegramHtml(item.subject)}\n` +
-    (item.hasAttachment ? `📎 <i>Ada lampiran (sudah dikirim terpisah saat email masuk)</i>\n\n` : '\n') +
-    `<blockquote>${escapeTelegramHtml(item.snippet || '(tidak ada isi)')}</blockquote>`;
+  if (item.richBlocks && Array.isArray(item.richBlocks) && item.richBlocks.length) {
+    blocks = item.richBlocks;
+    fallbackHtml = item.fallbackHtml || '';
+  } else {
+    const headerTableBlock = buildEmailHeaderRichBlock(item.address, item.from, item.subject, item.hasAttachment ? 1 : 0);
+    const bodyBlocks = smartPlainTextToRichBlocks(item.snippet || '(tidak ada isi)');
+    blocks = [
+      { type: 'section_heading', text: `📧 Detail Email #${idx + 1}` },
+      headerTableBlock,
+      { type: 'divider' },
+      ...bodyBlocks,
+    ];
+    fallbackHtml =
+      `📧 <b>Detail Email #${idx + 1}</b>\n\n` +
+      `<b>Ke:</b> <code>${escapeTelegramHtml(item.address)}</code>\n` +
+      `<b>Dari:</b> ${escapeTelegramHtml(item.from)}\n` +
+      `<b>Waktu:</b> ${escapeTelegramHtml(formatDateTime(item.receivedAt))}\n` +
+      `<b>Subjek:</b> ${escapeTelegramHtml(item.subject)}\n` +
+      (item.hasAttachment ? `📎 <i>Ada lampiran (sudah dikirim terpisah saat email masuk)</i>\n\n` : '\n') +
+      `<blockquote>${escapeTelegramHtml(item.snippet || '(tidak ada isi)')}</blockquote>`;
+  }
 
   const rows = [[{ text: '⬅️ Kembali ke Riwayat', callback_data: `i:${page}` }], [{ text: '🏠 Menu Utama', callback_data: 'm' }]];
   return {
@@ -1787,11 +1787,18 @@ function formatRemaining(ms) {
 
 function formatDateTime(timestampMs) {
   try {
-    return new Date(timestampMs).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' });
+    return new Date(timestampMs).toLocaleString('id-ID', {
+      dateStyle: 'short',
+      timeStyle: 'short',
+      timeZone: 'Asia/Jakarta'
+    });
   } catch {
-    return new Date(timestampMs).toISOString();
+    return new Date(timestampMs).toLocaleString('id-ID', {
+      timeZone: 'Asia/Jakarta'
+    });
   }
 }
+
 
 // --- Telegram API Helpers ---
 
@@ -1818,7 +1825,14 @@ async function sendPlainMessage(env, chatId, text, keyboard) {
 async function sendHtmlMessage(env, chatId, text, keyboard) {
   const payload = { chat_id: chatId, text, parse_mode: 'HTML' };
   if (keyboard) payload.reply_markup = keyboard;
-  return await tgApi(env, 'sendMessage', payload);
+  const res = await tgApi(env, 'sendMessage', payload);
+  if (!res.ok) {
+    const fallbackText = text.replace(/<[^>]+>/g, '');
+    const plainPayload = { chat_id: chatId, text: fallbackText };
+    if (keyboard) plainPayload.reply_markup = keyboard;
+    return await tgApi(env, 'sendMessage', plainPayload);
+  }
+  return res;
 }
 
 async function sendRichOrHtmlMessage(env, chatId, richMessage, fallbackHtml, keyboard) {
@@ -1870,7 +1884,9 @@ async function editRichOrHtmlView(env, chatId, messageId, view) {
       parse_mode: 'HTML',
       reply_markup: view.keyboard,
     });
-    if (!res.ok) {
+    if (res.ok) {
+      ok = true;
+    } else {
       let body = null;
       try {
         body = await res.clone().json();
@@ -1879,7 +1895,15 @@ async function editRichOrHtmlView(env, chatId, messageId, view) {
       }
       const isNotModified = body && body.description && body.description.includes('message is not modified');
       if (!isNotModified) {
-        await sendView(env, chatId, view);
+        const plainRes = await tgApi(env, 'editMessageText', {
+          chat_id: chatId,
+          message_id: messageId,
+          text: (view.fallbackHtml || view.text || '(Pesan kosong)').replace(/<[^>]+>/g, ''),
+          reply_markup: view.keyboard,
+        });
+        if (!plainRes.ok) {
+          await sendView(env, chatId, view);
+        }
       }
     }
   }
@@ -2116,20 +2140,47 @@ function bytesFromBinaryString(binStr) {
   return bytes;
 }
 
+function decodeUtf8Base64(b64) {
+  try {
+    const clean = b64.replace(/\s+/g, '');
+    const bin = atob(clean);
+    const bytes = bytesFromBinaryString(bin);
+    return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  } catch {
+    return b64;
+  }
+}
+
+function decodeUtf8QuotedPrintable(str) {
+  try {
+    const normalized = str.replace(/=\r?\n/g, '');
+    const bytes = [];
+    let i = 0;
+    while (i < normalized.length) {
+      if (normalized[i] === '=' && i + 2 < normalized.length && /[0-9A-Fa-f]{2}/.test(normalized.slice(i + 1, i + 3))) {
+        bytes.push(parseInt(normalized.slice(i + 1, i + 3), 16));
+        i += 3;
+      } else {
+        bytes.push(normalized.charCodeAt(i));
+        i++;
+      }
+    }
+    return new TextDecoder('utf-8', { fatal: false }).decode(new Uint8Array(bytes));
+  } catch {
+    return str;
+  }
+}
+
 function decodeBodyByEncoding(text, encoding) {
   if (!encoding) return text;
-  const enc = encoding.toLowerCase();
+  const enc = encoding.toLowerCase().trim();
 
   if (enc === 'base64') {
-    try {
-      return atob(text.replace(/\s+/g, ''));
-    } catch {
-      return text;
-    }
+    return decodeUtf8Base64(text);
   }
 
   if (enc === 'quoted-printable') {
-    return text.replace(/=\r?\n/g, '').replace(/=([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+    return decodeUtf8QuotedPrintable(text);
   }
 
   return text;
@@ -2139,10 +2190,25 @@ function decodeMimeHeader(value) {
   if (!value) return value;
   return value.replace(/=\?([^?]+)\?([BbQq])\?([^?]+)\?=/g, (_, charset, type, encoded) => {
     try {
+      const cs = (charset || 'utf-8').toLowerCase();
+      const decoder = new TextDecoder(cs.includes('8859') ? cs : 'utf-8', { fatal: false });
       if (type.toUpperCase() === 'B') {
-        return atob(encoded);
+        const bin = atob(encoded.replace(/\s+/g, ''));
+        return decoder.decode(bytesFromBinaryString(bin));
       } else {
-        return encoded.replace(/_/g, ' ').replace(/=([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+        const qClean = encoded.replace(/_/g, ' ');
+        const bytes = [];
+        let i = 0;
+        while (i < qClean.length) {
+          if (qClean[i] === '=' && i + 2 < qClean.length && /[0-9A-Fa-f]{2}/.test(qClean.slice(i + 1, i + 3))) {
+            bytes.push(parseInt(qClean.slice(i + 1, i + 3), 16));
+            i += 3;
+          } else {
+            bytes.push(qClean.charCodeAt(i));
+            i++;
+          }
+        }
+        return decoder.decode(new Uint8Array(bytes));
       }
     } catch {
       return encoded;
@@ -2192,6 +2258,18 @@ function closeNode(tag) {
   return { kind: 'close', tag, render: `</${tag}>` };
 }
 
+function isDataTable(tableHtml) {
+  if (/<th\b/i.test(tableHtml)) return true;
+  const trMatches = tableHtml.match(/<tr\b[\s\S]*?<\/tr>/gi) || [];
+  if (trMatches.length < 2) return false;
+  let multiCellRows = 0;
+  for (const tr of trMatches) {
+    const cellCount = (tr.match(/<(?:td|th)\b/gi) || []).length;
+    if (cellCount >= 2) multiCellRows++;
+  }
+  return multiCellRows >= 2;
+}
+
 function parseHtmlTable(tableHtml) {
   const rows = [];
   const trMatches = tableHtml.match(/<tr[\s\S]*?<\/tr>/gi) || [];
@@ -2208,7 +2286,7 @@ function parseHtmlTable(tableHtml) {
       row.push({ text: content || ' ', is_header: isHeader });
     }
     if (row.length > 0) {
-      rows.push(row.slice(0, 20)); // batas maksimal 20 kolom (Telegram limit)
+      rows.push(row.slice(0, 20));
     }
   }
 
@@ -2226,7 +2304,7 @@ function parseHtmlTable(tableHtml) {
     for (let r = 0; r < rows.length; r++) {
       colWidths[c] = Math.max(colWidths[c], (rows[r][c].text || '').length);
     }
-    colWidths[c] = Math.min(Math.max(colWidths[c], 1), 25);
+    colWidths[c] = Math.min(Math.max(colWidths[c], 1), 30);
   }
 
   const buildSep = (left, mid, right, line) =>
@@ -2264,6 +2342,36 @@ function parseHtmlTable(tableHtml) {
       cells: rows,
     },
   };
+}
+
+function processTables(html) {
+  let processed = html;
+  const dataTables = [];
+  const leafTableRegex = /<table\b[^>]*>(?:(?!<table\b)[\s\S])*?<\/table>/gi;
+
+  let maxIterations = 30;
+  while (leafTableRegex.test(processed) && maxIterations-- > 0) {
+    leafTableRegex.lastIndex = 0;
+    processed = processed.replace(leafTableRegex, (tbl) => {
+      if (isDataTable(tbl)) {
+        const parsed = parseHtmlTable(tbl);
+        if (parsed) {
+          const id = dataTables.length;
+          dataTables.push(parsed);
+          return `\n\n___DATA_TABLE_${id}___\n\n`;
+        }
+      }
+      return '\n' + tbl
+        .replace(/<\/?(?:table|tbody|thead|tfoot)\b[^>]*>/gi, '')
+        .replace(/<tr\b[^>]*>/gi, '\n')
+        .replace(/<\/tr>/gi, '')
+        .replace(/<(?:td|th)\b[^>]*>/gi, ' ')
+        .replace(/<\/(?:td|th)>/gi, ' ') + '\n';
+    });
+  }
+
+  processed = processed.replace(/<\/?(?:table|tbody|thead|tfoot|tr|td|th)\b[^>]*>/gi, '\n');
+  return { processedHtml: processed, dataTables };
 }
 
 function buildEmailHeaderRichBlock(to, from, subject, attachCount) {
@@ -2307,18 +2415,21 @@ function htmlToRichBlocks(html, collectedImages) {
     }
   }
 
-  const blockRegex = /(<table[\s\S]*?<\/table>|<h[1-6][\s\S]*?<\/h[1-6]>|<blockquote[\s\S]*?<\/blockquote>|<(?:ul|ol)[\s\S]*?<\/(?:ul|ol)>|<hr[\s\S]*?>|<pre[\s\S]*?<\/pre>|<(?:p|div)[\s\S]*?<\/(?:p|div)>)/gi;
-  const parts = src.split(blockRegex);
+  const { processedHtml, dataTables } = processTables(src);
+
+  const blockRegex = /(___DATA_TABLE_\d+___|<h[1-6][\s\S]*?<\/h[1-6]>|<blockquote[\s\S]*?<\/blockquote>|<(?:ul|ol)[\s\S]*?<\/(?:ul|ol)>|<hr[\s\S]*?>|<pre[\s\S]*?<\/pre>|<(?:p|div)[\s\S]*?<\/(?:p|div)>)/gi;
+  const parts = processedHtml.split(blockRegex);
 
   for (const part of parts) {
     if (!part) continue;
     const trimmed = part.trim();
     if (!trimmed) continue;
 
-    if (/^<table/i.test(trimmed)) {
-      const parsed = parseHtmlTable(trimmed);
-      if (parsed && parsed.richBlock) {
-        blocks.push(parsed.richBlock);
+    const dtMatch = trimmed.match(/^___DATA_TABLE_(\d+)___$/);
+    if (dtMatch) {
+      const idx = parseInt(dtMatch[1], 10);
+      if (dataTables[idx] && dataTables[idx].richBlock) {
+        blocks.push(dataTables[idx].richBlock);
       }
     } else if (/^<h[1-6]/i.test(trimmed)) {
       const text = decodeHtmlEntities(trimmed.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
@@ -2362,18 +2473,114 @@ function htmlToRichBlocks(html, collectedImages) {
   return blocks;
 }
 
-function plainTextToRichBlocks(text) {
+function smartPlainTextToRichBlocks(text) {
   const blocks = [];
   if (!text || !text.trim()) {
     return [{ type: 'paragraph', text: '(tidak ada isi teks)' }];
   }
-  const paragraphs = text.split(/\n{2,}/);
-  for (const p of paragraphs) {
-    const trimmed = p.trim();
-    if (trimmed) {
-      blocks.push({ type: 'paragraph', text: trimmed });
+
+  const normalized = text.replace(/([^\n])\n+([-=_*~]{3,})\n+/g, '$1\n\n$2\n\n')
+                         .replace(/\n+([-=_*~]{3,})\n+([^\n])/g, '\n\n$1\n\n$2');
+
+  const rawParagraphs = normalized.split(/\r?\n\s*\r?\n/);
+
+  for (const para of rawParagraphs) {
+    const trimmedPara = para.trim();
+    if (!trimmedPara) continue;
+
+    const lines = trimmedPara.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) continue;
+
+    if (lines.length === 1 && /^[-=_*~]{3,}$/.test(lines[0])) {
+      blocks.push({ type: 'divider' });
+      continue;
     }
+
+    if (lines.length === 1) {
+      const line = lines[0];
+      const matchHeadWrap = line.match(/^(?:[=\-#*]{2,}\s*)(.*?)(?:\s*[=\-#*]{2,})$/);
+      if (matchHeadWrap && matchHeadWrap[1].trim()) {
+        blocks.push({ type: 'section_heading', text: matchHeadWrap[1].trim() });
+        continue;
+      }
+      const matchBracketHead = line.match(/^\[\s*([A-Za-z0-9\s/_-]{3,40})\s*\]$/);
+      if (matchBracketHead) {
+        blocks.push({ type: 'section_heading', text: matchBracketHead[1].trim() });
+        continue;
+      }
+      if (/^[A-Z0-9\s/_-]{4,35}:?$/.test(line) && !line.includes('HTTP')) {
+        blocks.push({ type: 'section_heading', text: line.replace(/:$/, '').trim() });
+        continue;
+      }
+    }
+
+    if (lines.length === 1) {
+      const line = lines[0];
+      const otpMatch = line.match(/^(?:Kode\s*(?:OTP|Verifikasi|Konfirmasi)?\s*[:=-]?\s*)?([0-9]{4,8}|[A-Z0-9]{4,6}-[A-Z0-9]{4,6})$/i);
+      if (otpMatch && otpMatch[1]) {
+        blocks.push({ type: 'preformatted', text: otpMatch[1].trim() });
+        continue;
+      }
+    }
+
+    const isAllListItems = lines.every((l) => /^[-*•]\s+|^\d+[.)]\s+/.test(l));
+    if (isAllListItems && lines.length > 0) {
+      const items = lines.map((l) => ({ text: l.replace(/^[-*•]\s+|^\d+[.)]\s+/, '').trim() })).filter((it) => it.text);
+      if (items.length) {
+        blocks.push({ type: 'list', items });
+        continue;
+      }
+    }
+
+    if (lines.length >= 2 && /^[^•\-\d].*:$/.test(lines[0])) {
+      const restLines = lines.slice(1);
+      const isRestList = restLines.every((l) => /^[-*•]\s+|^\d+[.)]\s+/.test(l));
+      if (isRestList) {
+        blocks.push({ type: 'paragraph', text: lines[0] });
+        const items = restLines.map((l) => ({ text: l.replace(/^[-*•]\s+|^\d+[.)]\s+/, '').trim() })).filter((it) => it.text);
+        if (items.length) {
+          blocks.push({ type: 'list', items });
+        }
+        continue;
+      }
+    }
+
+    const kvMatches = lines.map((l) => l.match(/^([A-Za-z0-9\s/_-]{2,30}):\s*(.+)$/));
+    const isAllKV = kvMatches.every(Boolean);
+    if (isAllKV && lines.length >= 2) {
+      const cells = kvMatches.map((m) => [
+        { text: m[1].trim(), is_header: true },
+        { text: m[2].trim(), is_header: false },
+      ]);
+      blocks.push({
+        type: 'table',
+        is_bordered: true,
+        is_striped: true,
+        cells,
+      });
+      continue;
+    }
+
+    const isAllQuote = lines.every((l) => /^>\s*/.test(l));
+    if (isAllQuote && lines.length > 0) {
+      const qText = lines.map((l) => l.replace(/^>\s*/, '').trim()).join('\n');
+      blocks.push({ type: 'block_quotation', text: qText });
+      continue;
+    }
+
+    if (lines.length === 2) {
+      const maybeLabel = lines[0];
+      const maybeOtp = lines[1].match(/^([0-9]{4,8}|[A-Z0-9]{4,6}-[A-Z0-9]{4,6})$/);
+      if (/kode|otp|verifikasi|token/i.test(maybeLabel) && maybeOtp) {
+        blocks.push({ type: 'paragraph', text: maybeLabel });
+        blocks.push({ type: 'preformatted', text: maybeOtp[1] });
+        continue;
+      }
+    }
+
+    blocks.push({ type: 'paragraph', text: lines.join('\n') });
   }
+
   return blocks.length ? blocks : [{ type: 'paragraph', text: '(tidak ada isi teks)' }];
 }
 
@@ -2387,15 +2594,17 @@ function htmlToTelegramNodes(html, collectedImages) {
   src = src.replace(/<style[\s\S]*?<\/style>/gi, '');
   src = src.replace(/<head[\s\S]*?<\/head>/gi, '');
 
-  src = src.replace(/<table[\s\S]*?<\/table>/gi, (tableHtml) => {
-    const parsed = parseHtmlTable(tableHtml);
-    if (parsed && parsed.asciiTable) {
-      return `\n<pre>${parsed.asciiTable}</pre>\n`;
+  const { processedHtml, dataTables } = processTables(src);
+
+  let withAscii = processedHtml.replace(/___DATA_TABLE_(\d+)___/g, (_, id) => {
+    const idx = parseInt(id, 10);
+    if (dataTables[idx] && dataTables[idx].asciiTable) {
+      return `\n<pre>${dataTables[idx].asciiTable}</pre>\n`;
     }
     return '';
   });
 
-  const tokens = src.split(/(<[^>]+>)/g);
+  const tokens = withAscii.split(/(<[^>]+>)/g);
   const listStack = [];
   const danglingInline = [];
   let preCodeDepth = 0;
@@ -2418,7 +2627,9 @@ function htmlToTelegramNodes(html, collectedImages) {
       const isBlockBoundary =
         tag === 'li' || tag === 'ul' || tag === 'ol' || tag === 'td' || tag === 'th' || /^h[1-6]$/.test(tag) || TG_BLOCK_NEWLINE_TAGS.has(tag);
 
-      if (isBlockBoundary) forceCloseDanglingInline();
+      if (isBlockBoundary && !closing) {
+        forceCloseDanglingInline();
+      }
 
       if (!closing) {
         if (tag === 'br') {
@@ -2497,6 +2708,8 @@ function htmlToTelegramNodes(html, collectedImages) {
         } else if (/^h[1-6]$/.test(tag)) {
           nodes.push(closeNode('b'));
           nodes.push(textNode('\n'));
+          const idx = danglingInline.lastIndexOf('b');
+          if (idx !== -1) danglingInline.splice(idx, 1);
         } else if (tag === 'ul' || tag === 'ol') {
           listStack.pop();
           nodes.push(textNode('\n'));
@@ -2539,8 +2752,106 @@ function normalizeTelegramNodes(nodes) {
   return out;
 }
 
+function smartPlainTextToTelegramNodes(text) {
+  const nodes = [];
+  if (!text || !text.trim()) {
+    return [textNode('(tidak ada isi teks)')];
+  }
+
+  const normalized = text.replace(/([^\n])\n+([-=_*~]{3,})\n+/g, '$1\n\n$2\n\n')
+                         .replace(/\n+([-=_*~]{3,})\n+([^\n])/g, '\n\n$1\n\n$2');
+
+  const rawParagraphs = normalized.split(/\r?\n\s*\r?\n/);
+
+  for (const para of rawParagraphs) {
+    const trimmedPara = para.trim();
+    if (!trimmedPara) continue;
+
+    const lines = trimmedPara.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) continue;
+
+    if (lines.length === 1 && /^[-=_*~]{3,}$/.test(lines[0])) {
+      nodes.push(textNode('\n──────────\n'));
+      continue;
+    }
+
+    if (lines.length === 1) {
+      const line = lines[0];
+      const matchHeadWrap = line.match(/^(?:[=\-#*]{2,}\s*)(.*?)(?:\s*[=\-#*]{2,})$/);
+      if (matchHeadWrap && matchHeadWrap[1].trim()) {
+        nodes.push(textNode(`\n<b>${escapeTelegramHtml(matchHeadWrap[1].trim())}</b>\n`));
+        continue;
+      }
+      const matchBracketHead = line.match(/^\[\s*([A-Za-z0-9\s/_-]{3,40})\s*\]$/);
+      if (matchBracketHead) {
+        nodes.push(textNode(`\n<b>${escapeTelegramHtml(matchBracketHead[1].trim())}</b>\n`));
+        continue;
+      }
+      if (/^[A-Z0-9\s/_-]{4,35}:?$/.test(line) && !line.includes('HTTP')) {
+        nodes.push(textNode(`\n<b>${escapeTelegramHtml(line.replace(/:$/, '').trim())}</b>\n`));
+        continue;
+      }
+    }
+
+    if (lines.length === 1) {
+      const line = lines[0];
+      const otpMatch = line.match(/^(?:Kode\s*(?:OTP|Verifikasi|Konfirmasi)?\s*[:=-]?\s*)?([0-9]{4,8}|[A-Z0-9]{4,6}-[A-Z0-9]{4,6})$/i);
+      if (otpMatch && otpMatch[1]) {
+        nodes.push(textNode(`\n<code>${escapeTelegramHtml(otpMatch[1].trim())}</code>\n`));
+        continue;
+      }
+    }
+
+    const isAllListItems = lines.every((l) => /^[-*•]\s+|^\d+[.)]\s+/.test(l));
+    if (isAllListItems && lines.length > 0) {
+      const listStr = lines.map((l) => `• ${escapeTelegramHtml(l.replace(/^[-*•]\s+|^\d+[.)]\s+/, '').trim())}`).join('\n');
+      nodes.push(textNode(`\n${listStr}\n`));
+      continue;
+    }
+
+    if (lines.length >= 2 && /^[^•\-\d].*:$/.test(lines[0])) {
+      const restLines = lines.slice(1);
+      const isRestList = restLines.every((l) => /^[-*•]\s+|^\d+[.)]\s+/.test(l));
+      if (isRestList) {
+        nodes.push(textNode(`\n${escapeTelegramHtml(lines[0])}\n`));
+        const listStr = restLines.map((l) => `• ${escapeTelegramHtml(l.replace(/^[-*•]\s+|^\d+[.)]\s+/, '').trim())}`).join('\n');
+        nodes.push(textNode(`${listStr}\n`));
+        continue;
+      }
+    }
+
+    const kvMatches = lines.map((l) => l.match(/^([A-Za-z0-9\s/_-]{2,30}):\s*(.+)$/));
+    const isAllKV = kvMatches.every(Boolean);
+    if (isAllKV && lines.length >= 2) {
+      const kvStr = kvMatches.map((m) => `<b>${escapeTelegramHtml(m[1].trim())}:</b> ${escapeTelegramHtml(m[2].trim())}`).join('\n');
+      nodes.push(textNode(`\n${kvStr}\n`));
+      continue;
+    }
+
+    const isAllQuote = lines.every((l) => /^>\s*/.test(l));
+    if (isAllQuote && lines.length > 0) {
+      const qText = lines.map((l) => l.replace(/^>\s*/, '').trim()).join('\n');
+      nodes.push(textNode(`\n<blockquote>${escapeTelegramHtml(qText)}</blockquote>\n`));
+      continue;
+    }
+
+    if (lines.length === 2) {
+      const maybeLabel = lines[0];
+      const maybeOtp = lines[1].match(/^([0-9]{4,8}|[A-Z0-9]{4,6}-[A-Z0-9]{4,6})$/);
+      if (/kode|otp|verifikasi|token/i.test(maybeLabel) && maybeOtp) {
+        nodes.push(textNode(`\n${escapeTelegramHtml(maybeLabel)}\n<code>${escapeTelegramHtml(maybeOtp[1])}</code>\n`));
+        continue;
+      }
+    }
+
+    nodes.push(textNode(`\n${escapeTelegramHtml(lines.join('\n'))}\n`));
+  }
+
+  return normalizeTelegramNodes(nodes);
+}
+
 function plainTextToTelegramNodes(text) {
-  return [textNode(escapeTelegramHtml(text || ''))];
+  return smartPlainTextToTelegramNodes(text);
 }
 
 function chunkTelegramHtmlNodes(nodes, maxLen) {
