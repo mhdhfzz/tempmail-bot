@@ -8,8 +8,8 @@ const ADDRESS_TTL_SECONDS = 24 * 60 * 60;
 const DURATION_OPTIONS_HOURS = [6, 12, 24, 48, 72];
 const MAX_ADDRESSES_PER_USER = 8;
 const ADDR_PAGE_SIZE = 4;
-const MAX_INBOX_HISTORY = 15;
-const INBOX_PAGE_SIZE = 3;
+const MAX_INBOX_HISTORY = 12;
+const INBOX_PAGE_SIZE = 4;
 const INBOX_TTL_SECONDS = 30 * 24 * 60 * 60;
 const PENDING_TTL_SECONDS = 300;
 
@@ -63,25 +63,14 @@ export default {
       const from = parsed.headers['from'] || message.from || '(tidak diketahui)';
       const subject = parsed.headers['subject'] || '(tanpa subjek)';
 
-      const inlineImages = [];
-      let richBlocks = [];
-      let bodyNodes = [];
-      if (parsed.textHtml) {
-        richBlocks = htmlToRichBlocks(parsed.textHtml, inlineImages);
-        bodyNodes = htmlToTelegramNodes(parsed.textHtml, inlineImages);
-      } else if (parsed.textPlain) {
-        richBlocks = smartPlainTextToRichBlocks(parsed.textPlain);
-        bodyNodes = smartPlainTextToTelegramNodes(parsed.textPlain);
-      } else {
-        const emptyMsg = parsed.attachments.length ? '(Email ini hanya berisi lampiran, tanpa teks)' : '(tidak ada isi teks)';
-        richBlocks = [{ type: 'paragraph', text: emptyMsg }];
-        bodyNodes = smartPlainTextToTelegramNodes(emptyMsg);
-      }
+      // 1. Ekstrak isi teks email murni tanpa tag HTML
+      const cleanText = cleanEmailBody(parsed);
 
-      const headerTableBlock = buildEmailHeaderRichBlock(to, from, subject, parsed.attachments.length);
-      const emailBlocks = [headerTableBlock, ...richBlocks];
+      // 2. Ekstrak kode OTP / verifikasi dan tautan konfirmasi
+      const { primaryOtp, allOtps, verificationLink } = extractOtpAndLinks(cleanText, subject);
 
-      const headerHtml =
+      // 3. Susun header dan info OTP
+      let headerHtml =
         `📧 <b>Email Baru Masuk</b>\n` +
         `━━━━━━━━━━━━━━━━━━━━━━\n` +
         `<b>Untuk:</b> <code>${escapeTelegramHtml(to)}</code>\n` +
@@ -90,61 +79,65 @@ export default {
         (parsed.attachments.length ? `\n<b>Lampiran:</b> ${parsed.attachments.length} file` : '') +
         `\n━━━━━━━━━━━━━━━━━━━━━━\n\n`;
 
-      const chunkBudget = Math.max(1000, 3500 - headerHtml.length);
-      const chunks = chunkTelegramHtmlNodes(bodyNodes, chunkBudget);
-
-      if (emailBlocks.length <= 50) {
-        await sendRichOrHtmlMessage(
-          env,
-          chatId,
-          { blocks: emailBlocks },
-          headerHtml + chunks.join('\n\n'),
-          emailActionsKeyboard(to)
-        );
-      } else {
-        const BLOCK_CHUNK_SIZE = 40;
-        const totalBlockChunks = Math.ceil(emailBlocks.length / BLOCK_CHUNK_SIZE);
-        for (let b = 0; b < totalBlockChunks; b++) {
-          const isFirst = b === 0;
-          const isLast = b === totalBlockChunks - 1;
-          const blockChunk = emailBlocks.slice(b * BLOCK_CHUNK_SIZE, (b + 1) * BLOCK_CHUNK_SIZE);
-          if (!isFirst) {
-            blockChunk.unshift({
-              type: 'section_heading',
-              text: `(Bagian ${b + 1}/${totalBlockChunks})`,
-            });
+      if (primaryOtp) {
+        headerHtml +=
+          `🔐 <b>KODE VERIFIKASI / OTP:</b>\n` +
+          `👉 <code>${escapeTelegramHtml(primaryOtp)}</code>  <i>(Ketuk untuk menyalin)</i>\n`;
+        if (allOtps.length > 1) {
+          const otherOtps = allOtps.filter((c) => c !== primaryOtp);
+          if (otherOtps.length) {
+            headerHtml += `<i>Kode lain:</i> ${otherOtps.map((c) => `<code>${escapeTelegramHtml(c)}</code>`).join(', ')}\n`;
           }
-          const chunkFallback = isFirst
-            ? headerHtml + (chunks[0] || '')
-            : `<b>(Bagian ${b + 1}/${totalBlockChunks})</b>\n\n` + (chunks[b] || '');
-          const keyboard = isLast ? emailActionsKeyboard(to) : undefined;
-          await sendRichOrHtmlMessage(env, chatId, { blocks: blockChunk }, chunkFallback, keyboard);
         }
+        headerHtml += '\n';
       }
 
-      await sendEmailMediaGroups(env, chatId, inlineImages);
+      if (verificationLink) {
+        headerHtml +=
+          `🔗 <b>Tautan Verifikasi:</b>\n` +
+          `<a href="${escapeHtmlAttr(verificationLink)}">${escapeTelegramHtml(truncateForButton(verificationLink, 50))}</a>\n\n`;
+      }
 
+      const keyboard = emailActionsKeyboard(to, primaryOtp, verificationLink);
+
+      // 4. Kirim teks bersih ke Telegram (pecah pesan jika sangat panjang)
+      const bodyText = cleanText || (parsed.attachments.length ? '(Email ini hanya berisi lampiran, tanpa teks)' : '(tidak ada isi pesan)');
+      const chunks = splitTextIntoChunks(bodyText, 3200);
+
+      const firstMsgHtml = chunks.length > 1
+        ? headerHtml + `📝 <b>Isi Pesan (Bagian 1/${chunks.length}):</b>\n\n${escapeTelegramHtml(chunks[0])}`
+        : headerHtml + `📝 <b>Isi Pesan:</b>\n\n${escapeTelegramHtml(chunks[0])}`;
+
+      await sendHtmlMessage(env, chatId, firstMsgHtml, keyboard);
+
+      for (let i = 1; i < chunks.length; i++) {
+        const partHtml = `<b>(Bagian ${i + 1}/${chunks.length})</b>\n\n${escapeTelegramHtml(chunks[i])}`;
+        await sendHtmlMessage(env, chatId, partHtml);
+      }
+
+      // 5. Kirim file lampiran jika ada
       for (const att of parsed.attachments) {
         await sendDocumentToTelegram(env, chatId, att.filename, att.mimeType, att.bytes);
       }
 
-      const plainSnippetSource = parsed.textPlain || (parsed.textHtml ? htmlToText(parsed.textHtml) : '');
-      const snippet = plainSnippetSource
-        ? plainSnippetSource.length > 200
-          ? plainSnippetSource.slice(0, 200) + '…'
-          : plainSnippetSource
+      // 6. Simpan ke riwayat KV
+      const snippet = cleanText
+        ? cleanText.length > 200
+          ? cleanText.slice(0, 200) + '…'
+          : cleanText
         : parsed.attachments.length
           ? '(Email ini hanya berisi lampiran, tanpa teks)'
-          : '(tidak ada isi teks)';
+          : '(tidak ada isi pesan)';
+
       await pushInboxEntry(env, chatId, {
         address: to,
         from,
         subject,
         snippet,
-        fullText: plainSnippetSource,
-        richBlocks: emailBlocks,
-        fallbackChunks: chunks,
-        headerHtml,
+        cleanText,
+        primaryOtp: primaryOtp || null,
+        allOtps: allOtps || [],
+        verificationLink: verificationLink || null,
         receivedAt: Date.now(),
         hasAttachment: parsed.attachments.length > 0,
       });
@@ -152,7 +145,10 @@ export default {
       await incrementCounter(env, 'stats:totalEmailsForwarded');
       await notifyAdmin(
         env,
-        `📧 Email masuk ke <code>${escapeTelegramHtml(to)}</code> (pemilik: ${formatUserLink(null, chatId)})\nDari: ${escapeTelegramHtml(from)}\nSubjek: ${escapeTelegramHtml(subject)}`
+        `📧 Email masuk ke <code>${escapeTelegramHtml(to)}</code> (pemilik: ${formatUserLink(null, chatId)})\n` +
+        `Dari: ${escapeTelegramHtml(from)}\n` +
+        `Subjek: ${escapeTelegramHtml(subject)}` +
+        (primaryOtp ? `\nOTP: <code>${escapeTelegramHtml(primaryOtp)}</code>` : '')
       );
     } catch (err) {
       console.error('Gagal memproses email masuk:', err);
@@ -1177,62 +1173,68 @@ function viewAddressInboxDetail(addresses, addrIdx, inbox, page, filteredIdx, pa
   const addr = addresses[addrIdx];
   const filtered = inbox.filter((item) => item.address === addr.address);
   const item = filtered[filteredIdx];
-  const attachNote = item.hasAttachment ? '📎 Ada lampiran (terkirim terpisah)' : 'Tidak ada';
 
-  let allBlocks = [];
-  if (item.richBlocks && Array.isArray(item.richBlocks) && item.richBlocks.length) {
-    allBlocks = item.richBlocks;
-  } else {
-    const headerTableBlock = buildEmailHeaderRichBlock(item.address, item.from, item.subject, item.hasAttachment ? 1 : 0);
-    const bodyBlocks = smartPlainTextToRichBlocks(item.fullText || item.snippet || '(tidak ada isi teks)');
-    allBlocks = [
-      { type: 'section_heading', text: '📧 Detail Email' },
-      headerTableBlock,
-      { type: 'divider' },
-      ...bodyBlocks,
-    ];
+  const cleanText = item.cleanText || item.fullText || item.snippet || '(tidak ada isi pesan)';
+
+  let primaryOtp = item.primaryOtp;
+  let verificationLink = item.verificationLink;
+  if (!primaryOtp && !verificationLink) {
+    const extracted = extractOtpAndLinks(cleanText, item.subject || '');
+    primaryOtp = extracted.primaryOtp;
+    verificationLink = extracted.verificationLink;
   }
 
-  const BLOCK_CHUNK_SIZE = 40;
-  const totalParts = Math.max(1, Math.ceil(allBlocks.length / BLOCK_CHUNK_SIZE));
+  const chunks = splitTextIntoChunks(cleanText, 3000);
+  const totalParts = Math.max(1, chunks.length);
   const safePart = Math.max(0, Math.min(part, totalParts - 1));
-  const pageBlocks = allBlocks.slice(safePart * BLOCK_CHUNK_SIZE, (safePart + 1) * BLOCK_CHUNK_SIZE);
 
-  if (safePart > 0) {
-    pageBlocks.unshift({
-      type: 'section_heading',
-      text: `📄 Isi Lanjutan (Bagian ${safePart + 1}/${totalParts})`,
-    });
+  let detailHtml =
+    `📧 <b>Detail Email Masuk</b>\n\n` +
+    `<b>Ke:</b> <code>${escapeTelegramHtml(item.address)}</code>\n` +
+    `<b>Dari:</b> ${escapeTelegramHtml(item.from)}\n` +
+    `<b>Waktu:</b> ${escapeTelegramHtml(formatDateTime(item.receivedAt))}\n` +
+    `<b>Subjek:</b> <b>${escapeTelegramHtml(item.subject)}</b>\n` +
+    (item.hasAttachment ? `📎 <i>Ada lampiran</i>\n` : '') +
+    `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+  if (primaryOtp) {
+    detailHtml +=
+      `🔐 <b>KODE VERIFIKASI / OTP:</b>\n` +
+      `👉 <code>${escapeTelegramHtml(primaryOtp)}</code>  <i>(Ketuk untuk menyalin)</i>\n\n`;
   }
 
-  let fallbackHtml = '';
-  if (item.fallbackChunks && item.fallbackChunks.length) {
-    const isFirst = safePart === 0;
-    const header = item.headerHtml || (
-      `📧 <b>Detail Email</b>\n\n` +
-      `<b>Ke:</b> <code>${escapeTelegramHtml(item.address)}</code>\n` +
-      `<b>Dari:</b> ${escapeTelegramHtml(item.from)}\n` +
-      `<b>Waktu:</b> ${escapeTelegramHtml(formatDateTime(item.receivedAt))}\n` +
-      `<b>Subjek:</b> ${escapeTelegramHtml(item.subject)}\n` +
-      (item.hasAttachment ? `📎 <i>Ada lampiran</i>\n\n` : '\n')
-    );
-    fallbackHtml = isFirst
-      ? header + (item.fallbackChunks[0] || '')
-      : `<b>(Bagian ${safePart + 1}/${totalParts})</b>\n\n` + (item.fallbackChunks[safePart] || '');
-  } else if (item.fallbackHtml) {
-    fallbackHtml = item.fallbackHtml;
+  if (verificationLink) {
+    detailHtml +=
+      `🔗 <b>Tautan Verifikasi:</b>\n` +
+      `<a href="${escapeHtmlAttr(verificationLink)}">${escapeTelegramHtml(truncateForButton(verificationLink, 50))}</a>\n\n`;
+  }
+
+  if (totalParts > 1) {
+    detailHtml += `📝 <b>Isi Pesan (Bagian ${safePart + 1}/${totalParts}):</b>\n\n`;
   } else {
-    fallbackHtml =
-      `📧 <b>Detail Email</b>\n\n` +
-      `<b>Ke:</b> <code>${escapeTelegramHtml(item.address)}</code>\n` +
-      `<b>Dari:</b> ${escapeTelegramHtml(item.from)}\n` +
-      `<b>Waktu:</b> ${escapeTelegramHtml(formatDateTime(item.receivedAt))}\n` +
-      `<b>Subjek:</b> ${escapeTelegramHtml(item.subject)}\n` +
-      (item.hasAttachment ? `📎 <i>Ada lampiran (sudah dikirim terpisah)</i>\n\n` : '\n') +
-      `${escapeTelegramHtml(item.fullText || item.snippet || '(tidak ada isi teks)')}`;
+    detailHtml += `📝 <b>Isi Pesan:</b>\n\n`;
   }
+
+  detailHtml += escapeTelegramHtml(chunks[safePart] || '');
 
   const rows = [];
+  if (primaryOtp) {
+    rows.push([
+      {
+        text: `📋 Salin: ${primaryOtp}`,
+        copy_text: { text: primaryOtp },
+      },
+    ]);
+  }
+  if (verificationLink) {
+    rows.push([
+      {
+        text: '🔗 Buka Tautan Verifikasi',
+        url: verificationLink,
+      },
+    ]);
+  }
+
   if (totalParts > 1) {
     const navRow = [];
     if (safePart > 0) {
@@ -1252,9 +1254,8 @@ function viewAddressInboxDetail(addresses, addrIdx, inbox, page, filteredIdx, pa
   );
 
   return {
-    richMessage: { blocks: pageBlocks },
-    fallbackHtml,
-    text: fallbackHtml,
+    fallbackHtml: detailHtml,
+    text: detailHtml,
     keyboard: { inline_keyboard: rows },
   };
 }
@@ -1410,62 +1411,68 @@ function viewInboxList(inbox, page) {
 function viewInboxDetail(inbox, idx, part = 0) {
   const item = inbox[idx];
   const page = Math.floor(idx / INBOX_PAGE_SIZE);
-  const attachNote = item.hasAttachment ? '📎 Ada lampiran (terkirim terpisah)' : 'Tidak ada';
 
-  let allBlocks = [];
-  if (item.richBlocks && Array.isArray(item.richBlocks) && item.richBlocks.length) {
-    allBlocks = item.richBlocks;
-  } else {
-    const headerTableBlock = buildEmailHeaderRichBlock(item.address, item.from, item.subject, item.hasAttachment ? 1 : 0);
-    const bodyBlocks = smartPlainTextToRichBlocks(item.fullText || item.snippet || '(tidak ada isi teks)');
-    allBlocks = [
-      { type: 'section_heading', text: `📧 Detail Email #${idx + 1}` },
-      headerTableBlock,
-      { type: 'divider' },
-      ...bodyBlocks,
-    ];
+  const cleanText = item.cleanText || item.fullText || item.snippet || '(tidak ada isi pesan)';
+
+  let primaryOtp = item.primaryOtp;
+  let verificationLink = item.verificationLink;
+  if (!primaryOtp && !verificationLink) {
+    const extracted = extractOtpAndLinks(cleanText, item.subject || '');
+    primaryOtp = extracted.primaryOtp;
+    verificationLink = extracted.verificationLink;
   }
 
-  const BLOCK_CHUNK_SIZE = 40;
-  const totalParts = Math.max(1, Math.ceil(allBlocks.length / BLOCK_CHUNK_SIZE));
+  const chunks = splitTextIntoChunks(cleanText, 3000);
+  const totalParts = Math.max(1, chunks.length);
   const safePart = Math.max(0, Math.min(part, totalParts - 1));
-  const pageBlocks = allBlocks.slice(safePart * BLOCK_CHUNK_SIZE, (safePart + 1) * BLOCK_CHUNK_SIZE);
 
-  if (safePart > 0) {
-    pageBlocks.unshift({
-      type: 'section_heading',
-      text: `📄 Isi Lanjutan (Bagian ${safePart + 1}/${totalParts})`,
-    });
+  let detailHtml =
+    `📧 <b>Detail Email #${idx + 1}</b>\n\n` +
+    `<b>Ke:</b> <code>${escapeTelegramHtml(item.address)}</code>\n` +
+    `<b>Dari:</b> ${escapeTelegramHtml(item.from)}\n` +
+    `<b>Waktu:</b> ${escapeTelegramHtml(formatDateTime(item.receivedAt))}\n` +
+    `<b>Subjek:</b> <b>${escapeTelegramHtml(item.subject)}</b>\n` +
+    (item.hasAttachment ? `📎 <i>Ada lampiran</i>\n` : '') +
+    `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+  if (primaryOtp) {
+    detailHtml +=
+      `🔐 <b>KODE VERIFIKASI / OTP:</b>\n` +
+      `👉 <code>${escapeTelegramHtml(primaryOtp)}</code>  <i>(Ketuk untuk menyalin)</i>\n\n`;
   }
 
-  let fallbackHtml = '';
-  if (item.fallbackChunks && item.fallbackChunks.length) {
-    const isFirst = safePart === 0;
-    const header = item.headerHtml || (
-      `📧 <b>Detail Email #${idx + 1}</b>\n\n` +
-      `<b>Ke:</b> <code>${escapeTelegramHtml(item.address)}</code>\n` +
-      `<b>Dari:</b> ${escapeTelegramHtml(item.from)}\n` +
-      `<b>Waktu:</b> ${escapeTelegramHtml(formatDateTime(item.receivedAt))}\n` +
-      `<b>Subjek:</b> ${escapeTelegramHtml(item.subject)}\n` +
-      (item.hasAttachment ? `📎 <i>Ada lampiran (sudah dikirim terpisah saat email masuk)</i>\n\n` : '\n')
-    );
-    fallbackHtml = isFirst
-      ? header + (item.fallbackChunks[0] || '')
-      : `<b>(Bagian ${safePart + 1}/${totalParts})</b>\n\n` + (item.fallbackChunks[safePart] || '');
-  } else if (item.fallbackHtml) {
-    fallbackHtml = item.fallbackHtml;
+  if (verificationLink) {
+    detailHtml +=
+      `🔗 <b>Tautan Verifikasi:</b>\n` +
+      `<a href="${escapeHtmlAttr(verificationLink)}">${escapeTelegramHtml(truncateForButton(verificationLink, 50))}</a>\n\n`;
+  }
+
+  if (totalParts > 1) {
+    detailHtml += `📝 <b>Isi Pesan (Bagian ${safePart + 1}/${totalParts}):</b>\n\n`;
   } else {
-    fallbackHtml =
-      `📧 <b>Detail Email #${idx + 1}</b>\n\n` +
-      `<b>Ke:</b> <code>${escapeTelegramHtml(item.address)}</code>\n` +
-      `<b>Dari:</b> ${escapeTelegramHtml(item.from)}\n` +
-      `<b>Waktu:</b> ${escapeTelegramHtml(formatDateTime(item.receivedAt))}\n` +
-      `<b>Subjek:</b> ${escapeTelegramHtml(item.subject)}\n` +
-      (item.hasAttachment ? `📎 <i>Ada lampiran (sudah dikirim terpisah saat email masuk)</i>\n\n` : '\n') +
-      `${escapeTelegramHtml(item.fullText || item.snippet || '(tidak ada isi teks)')}`;
+    detailHtml += `📝 <b>Isi Pesan:</b>\n\n`;
   }
+
+  detailHtml += escapeTelegramHtml(chunks[safePart] || '');
 
   const rows = [];
+  if (primaryOtp) {
+    rows.push([
+      {
+        text: `📋 Salin: ${primaryOtp}`,
+        copy_text: { text: primaryOtp },
+      },
+    ]);
+  }
+  if (verificationLink) {
+    rows.push([
+      {
+        text: '🔗 Buka Tautan Verifikasi',
+        url: verificationLink,
+      },
+    ]);
+  }
+
   if (totalParts > 1) {
     const navRow = [];
     if (safePart > 0) {
@@ -1485,50 +1492,57 @@ function viewInboxDetail(inbox, idx, part = 0) {
   );
 
   return {
-    richMessage: { blocks: pageBlocks },
-    fallbackHtml,
-    text: fallbackHtml,
+    fallbackHtml: detailHtml,
+    text: detailHtml,
     keyboard: { inline_keyboard: rows },
   };
 }
 
 async function sendFullEmailToChat(env, chatId, item) {
-  const blocks = (item.richBlocks && item.richBlocks.length)
-    ? item.richBlocks
-    : smartPlainTextToRichBlocks(item.fullText || item.snippet || '(tidak ada isi teks)');
+  const cleanText = item.cleanText || item.fullText || item.snippet || '(tidak ada isi pesan)';
+  let primaryOtp = item.primaryOtp;
+  let verificationLink = item.verificationLink;
+  if (!primaryOtp && !verificationLink) {
+    const extracted = extractOtpAndLinks(cleanText, item.subject || '');
+    primaryOtp = extracted.primaryOtp;
+    verificationLink = extracted.verificationLink;
+  }
 
-  const BLOCK_CHUNK_SIZE = 40;
-  const totalBlockChunks = Math.ceil(blocks.length / BLOCK_CHUNK_SIZE);
-  const chunks = (item.fallbackChunks && item.fallbackChunks.length)
-    ? item.fallbackChunks
-    : chunkTelegramHtmlNodes(smartPlainTextToTelegramNodes(item.fullText || item.snippet || '(tidak ada isi teks)'), 3500);
+  const chunks = splitTextIntoChunks(cleanText, 3500);
 
-  const headerHtml = item.headerHtml || (
+  let headerHtml =
     `📧 <b>Salinan Lengkap Email</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━━━\n` +
     `<b>Ke:</b> <code>${escapeTelegramHtml(item.address)}</code>\n` +
     `<b>Dari:</b> ${escapeTelegramHtml(item.from)}\n` +
     `<b>Subjek:</b> <b>${escapeTelegramHtml(item.subject)}</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━━━\n\n`
-  );
+    `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
 
-  if (totalBlockChunks <= 1) {
-    await sendRichOrHtmlMessage(env, chatId, { blocks }, headerHtml + (chunks[0] || ''));
-  } else {
-    for (let b = 0; b < totalBlockChunks; b++) {
-      const isFirst = b === 0;
-      const blockChunk = blocks.slice(b * BLOCK_CHUNK_SIZE, (b + 1) * BLOCK_CHUNK_SIZE);
-      if (!isFirst) {
-        blockChunk.unshift({
-          type: 'section_heading',
-          text: `(Bagian ${b + 1}/${totalBlockChunks})`,
-        });
-      }
-      const chunkFallback = isFirst
-        ? headerHtml + (chunks[0] || '')
-        : `<b>(Bagian ${b + 1}/${totalBlockChunks})</b>\n\n` + (chunks[b] || '');
-      await sendRichOrHtmlMessage(env, chatId, { blocks: blockChunk }, chunkFallback);
-    }
+  if (primaryOtp) {
+    headerHtml +=
+      `🔐 <b>KODE VERIFIKASI / OTP:</b>\n` +
+      `👉 <code>${escapeTelegramHtml(primaryOtp)}</code>  <i>(Ketuk untuk menyalin)</i>\n\n`;
+  }
+
+  if (verificationLink) {
+    headerHtml +=
+      `🔗 <b>Tautan Verifikasi:</b>\n` +
+      `<a href="${escapeHtmlAttr(verificationLink)}">${escapeTelegramHtml(truncateForButton(verificationLink, 50))}</a>\n\n`;
+  }
+
+  for (let b = 0; b < chunks.length; b++) {
+    const isFirst = b === 0;
+    const msg = isFirst
+      ? headerHtml + `📝 <b>Isi Pesan:</b>\n\n` + escapeTelegramHtml(chunks[0])
+      : `<b>(Bagian ${b + 1}/${chunks.length})</b>\n\n` + escapeTelegramHtml(chunks[b]);
+
+    const keyboard = isFirst && primaryOtp ? {
+      inline_keyboard: [
+        [{ text: `📋 Salin: ${primaryOtp}`, copy_text: { text: primaryOtp } }]
+      ]
+    } : undefined;
+
+    await sendHtmlMessage(env, chatId, msg, keyboard);
   }
 }
 
@@ -1578,15 +1592,29 @@ function mainMenuKeyboard() {
   };
 }
 
-function emailActionsKeyboard(address) {
-  return {
-    inline_keyboard: [
-      [
-        { text: '📮 Alamat Saya', callback_data: 'l:0' },
-        { text: '🆕 Alamat Baru', callback_data: 'new' },
-      ],
-    ],
-  };
+function emailActionsKeyboard(address, primaryOtp = null, verificationLink = null) {
+  const rows = [];
+  if (primaryOtp) {
+    rows.push([
+      {
+        text: `📋 Salin: ${primaryOtp}`,
+        copy_text: { text: primaryOtp },
+      },
+    ]);
+  }
+  if (verificationLink) {
+    rows.push([
+      {
+        text: '🔗 Buka Tautan Verifikasi',
+        url: verificationLink,
+      },
+    ]);
+  }
+  rows.push([
+    { text: '📮 Alamat Saya', callback_data: 'l:0' },
+    { text: '🆕 Alamat Baru', callback_data: 'new' },
+  ]);
+  return { inline_keyboard: rows };
 }
 
 function truncateForButton(str, maxLen) {
@@ -2428,717 +2456,20 @@ function decodeMimeHeader(value) {
   });
 }
 
-// --- HTML to Rich Blocks & Telegram Parser ---
+// --- Email Plain-Text Cleaning & OTP Extractor ---
 
-const TG_INLINE_TAGS = {
-  b: 'b', strong: 'b',
-  i: 'i', em: 'i',
-  u: 'u', ins: 'u',
-  s: 's', strike: 's', del: 's',
-};
-
-const TG_BLOCK_NEWLINE_TAGS = new Set([
-  'p', 'div', 'tr', 'table', 'section', 'article', 'header', 'footer', 'center', 'body', 'html',
-]);
-
-function parseTagAttrs(tagRaw) {
-  const attrs = {};
-  const attrRegex = /([a-zA-Z0-9-]+)\s*=\s*"([^"]*)"|([a-zA-Z0-9-]+)\s*=\s*'([^']*)'/g;
-  let m;
-  while ((m = attrRegex.exec(tagRaw))) {
-    const name = (m[1] || m[3] || '').toLowerCase();
-    const value = m[2] !== undefined ? m[2] : m[4];
-    attrs[name] = value;
-  }
-  return attrs;
-}
-
-function sanitizeHref(rawHref) {
-  if (!rawHref) return null;
-  const decoded = decodeHtmlEntities(rawHref).trim();
-  if (/^https?:\/\//i.test(decoded) || /^mailto:/i.test(decoded)) return decoded;
-  return null;
-}
-
-function textNode(render) {
-  return { kind: 'text', render };
-}
-function openNode(tag, render) {
-  return { kind: 'open', tag, render, closeRender: `</${tag}>` };
-}
-function closeNode(tag) {
-  return { kind: 'close', tag, render: `</${tag}>` };
-}
-
-function isDataTable(tableHtml) {
-  if (/<th\b/i.test(tableHtml)) return true;
-  const trMatches = tableHtml.match(/<tr\b[\s\S]*?<\/tr>/gi) || [];
-  if (trMatches.length < 2) return false;
-  let multiCellRows = 0;
-  for (const tr of trMatches) {
-    const cellCount = (tr.match(/<(?:td|th)\b/gi) || []).length;
-    if (cellCount >= 2) multiCellRows++;
-  }
-  return multiCellRows >= 2;
-}
-
-function parseHtmlTable(tableHtml) {
-  const rows = [];
-  const trMatches = tableHtml.match(/<tr[\s\S]*?<\/tr>/gi) || [];
-
-  for (const trHtml of trMatches) {
-    const row = [];
-    const cellRegex = /<(td|th)([\s\S]*?)>([\s\S]*?)<\/\1>/gi;
-    let cellMatch;
-    while ((cellMatch = cellRegex.exec(trHtml)) !== null) {
-      const isHeader = cellMatch[1].toLowerCase() === 'th';
-      let content = cellMatch[3] || '';
-      content = content.replace(/<[^>]+>/g, ' ');
-      content = decodeHtmlEntities(content).replace(/\s+/g, ' ').trim();
-      row.push({ text: content || ' ', is_header: isHeader });
-    }
-    if (row.length > 0) {
-      rows.push(row.slice(0, 20));
-    }
-  }
-
-  if (rows.length === 0) return null;
-
-  const maxCols = Math.max(...rows.map((r) => r.length));
-  for (const r of rows) {
-    while (r.length < maxCols) {
-      r.push({ text: ' ', is_header: false });
-    }
-  }
-
-  const colWidths = new Array(maxCols).fill(0);
-  for (let c = 0; c < maxCols; c++) {
-    for (let r = 0; r < rows.length; r++) {
-      colWidths[c] = Math.max(colWidths[c], (rows[r][c].text || '').length);
-    }
-    colWidths[c] = Math.min(Math.max(colWidths[c], 1), 30);
-  }
-
-  const buildSep = (left, mid, right, line) =>
-    left + colWidths.map((w) => line.repeat(w + 2)).join(mid) + right;
-
-  const topBorder = buildSep('┌', '┬', '┐', '─');
-  const midBorder = buildSep('├', '┼', '┤', '─');
-  const botBorder = buildSep('└', '┴', '┘', '─');
-
-  const lines = [topBorder];
-  for (let r = 0; r < rows.length; r++) {
-    const rowStr =
-      '│ ' +
-      rows[r]
-        .map((cell, c) => {
-          const t = cell.text.length > colWidths[c] ? cell.text.slice(0, colWidths[c] - 1) + '…' : cell.text;
-          return t.padEnd(colWidths[c]);
-        })
-        .join(' │ ') +
-      ' │';
-    lines.push(rowStr);
-    if (r === 0 && rows.length > 1) {
-      lines.push(midBorder);
-    }
-  }
-  lines.push(botBorder);
-
-  return {
-    rows,
-    asciiTable: lines.join('\n'),
-    richBlock: {
-      type: 'table',
-      is_bordered: true,
-      is_striped: true,
-      cells: rows,
-    },
-  };
-}
-
-function processTables(html) {
-  let processed = html;
-  const dataTables = [];
-  const leafTableRegex = /<table\b[^>]*>(?:(?!<table\b)[\s\S])*?<\/table>/gi;
-
-  let maxIterations = 30;
-  while (leafTableRegex.test(processed) && maxIterations-- > 0) {
-    leafTableRegex.lastIndex = 0;
-    processed = processed.replace(leafTableRegex, (tbl) => {
-      if (isDataTable(tbl)) {
-        const parsed = parseHtmlTable(tbl);
-        if (parsed) {
-          const id = dataTables.length;
-          dataTables.push(parsed);
-          return `\n\n___DATA_TABLE_${id}___\n\n`;
-        }
-      }
-      return '\n' + tbl
-        .replace(/<\/?(?:table|tbody|thead|tfoot)\b[^>]*>/gi, '')
-        .replace(/<tr\b[^>]*>/gi, '\n')
-        .replace(/<\/tr>/gi, '')
-        .replace(/<(?:td|th)\b[^>]*>/gi, ' ')
-        .replace(/<\/(?:td|th)>/gi, ' ') + '\n';
-    });
-  }
-
-  processed = processed.replace(/<\/?(?:table|tbody|thead|tfoot|tr|td|th)\b[^>]*>/gi, '\n');
-  return { processedHtml: processed, dataTables };
-}
-
-function buildEmailHeaderRichBlock(to, from, subject, attachCount) {
-  const rows = [
-    [{ text: 'Untuk', is_header: true }, { text: to }],
-    [{ text: 'Dari', is_header: true }, { text: from }],
-    [{ text: 'Subjek', is_header: true }, { text: subject }],
-  ];
-  if (attachCount > 0) {
-    rows.push([{ text: 'Lampiran', is_header: true }, { text: `${attachCount} file` }]);
-  }
-  return {
-    type: 'table',
-    is_bordered: true,
-    is_striped: true,
-    cells: rows,
-  };
-}
-
-function htmlToRichBlocks(html, collectedImages) {
-  const blocks = [];
-  if (!html) return blocks;
-
-  let src = html;
-  src = src.replace(/<!--[\s\S]*?-->/g, '');
-  src = src.replace(/<script[\s\S]*?<\/script>/gi, '');
-  src = src.replace(/<style[\s\S]*?<\/style>/gi, '');
-  src = src.replace(/<head[\s\S]*?<\/head>/gi, '');
-
-  const imgRegex = /<img([\s\S]*?)>/gi;
-  let imgMatch;
-  while ((imgMatch = imgRegex.exec(src)) !== null) {
-    const attrs = parseTagAttrs(imgMatch[0]);
-    const width = parseInt(attrs.width, 10);
-    const height = parseInt(attrs.height, 10);
-    const looksLikeTracker = width === 1 || height === 1;
-    if (!looksLikeTracker && attrs.src && /^https?:\/\//i.test(attrs.src) && collectedImages) {
-      if (!collectedImages.includes(attrs.src)) {
-        collectedImages.push(attrs.src);
-      }
-    }
-  }
-
-  const { processedHtml, dataTables } = processTables(src);
-
-  const blockRegex = /(___DATA_TABLE_\d+___|<h[1-6][\s\S]*?<\/h[1-6]>|<blockquote[\s\S]*?<\/blockquote>|<(?:ul|ol)[\s\S]*?<\/(?:ul|ol)>|<hr[\s\S]*?>|<pre[\s\S]*?<\/pre>|<(?:p|div)[\s\S]*?<\/(?:p|div)>)/gi;
-  const parts = processedHtml.split(blockRegex);
-
-  for (const part of parts) {
-    if (!part) continue;
-    const trimmed = part.trim();
-    if (!trimmed) continue;
-
-    const dtMatch = trimmed.match(/^___DATA_TABLE_(\d+)___$/);
-    if (dtMatch) {
-      const idx = parseInt(dtMatch[1], 10);
-      if (dataTables[idx] && dataTables[idx].richBlock) {
-        blocks.push(dataTables[idx].richBlock);
-      }
-    } else if (/^<h[1-6]/i.test(trimmed)) {
-      const text = decodeHtmlEntities(trimmed.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
-      if (text) {
-        blocks.push({ type: 'section_heading', text });
-      }
-    } else if (/^<blockquote/i.test(trimmed)) {
-      const text = decodeHtmlEntities(trimmed.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
-      if (text) {
-        blocks.push({ type: 'block_quotation', text });
-      }
-    } else if (/^<(ul|ol)/i.test(trimmed)) {
-      const liMatches = trimmed.match(/<li[\s\S]*?<\/li>/gi) || [];
-      const items = [];
-      for (const li of liMatches) {
-        const itemText = decodeHtmlEntities(li.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
-        if (itemText) items.push({ text: itemText });
-      }
-      if (items.length) {
-        blocks.push({ type: 'list', items });
-      }
-    } else if (/^<hr/i.test(trimmed)) {
-      blocks.push({ type: 'divider' });
-    } else if (/^<pre/i.test(trimmed)) {
-      const text = decodeHtmlEntities(trimmed.replace(/<[^>]+>/g, '')).trim();
-      if (text) {
-        blocks.push({ type: 'preformatted', text });
-      }
-    } else {
-      const text = decodeHtmlEntities(trimmed.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
-      if (text) {
-        blocks.push({ type: 'paragraph', text });
-      }
-    }
-  }
-
-  if (blocks.length === 0) {
-    blocks.push({ type: 'paragraph', text: '(tidak ada isi teks)' });
-  }
-
-  return blocks;
-}
-
-function smartPlainTextToRichBlocks(text) {
-  const blocks = [];
-  if (!text || !text.trim()) {
-    return [{ type: 'paragraph', text: '(tidak ada isi teks)' }];
-  }
-
-  const normalized = text.replace(/([^\n])\n+([-=_*~]{3,})\n+/g, '$1\n\n$2\n\n')
-                         .replace(/\n+([-=_*~]{3,})\n+([^\n])/g, '\n\n$1\n\n$2');
-
-  const rawParagraphs = normalized.split(/\r?\n\s*\r?\n/);
-
-  for (const para of rawParagraphs) {
-    const trimmedPara = para.trim();
-    if (!trimmedPara) continue;
-
-    const lines = trimmedPara.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    if (!lines.length) continue;
-
-    if (lines.length === 1 && /^[-=_*~]{3,}$/.test(lines[0])) {
-      blocks.push({ type: 'divider' });
-      continue;
-    }
-
-    if (lines.length === 1) {
-      const line = lines[0];
-      const matchHeadWrap = line.match(/^(?:[=\-#*]{2,}\s*)(.*?)(?:\s*[=\-#*]{2,})$/);
-      if (matchHeadWrap && matchHeadWrap[1].trim()) {
-        blocks.push({ type: 'section_heading', text: matchHeadWrap[1].trim() });
-        continue;
-      }
-      const matchBracketHead = line.match(/^\[\s*([A-Za-z0-9\s/_-]{3,40})\s*\]$/);
-      if (matchBracketHead) {
-        blocks.push({ type: 'section_heading', text: matchBracketHead[1].trim() });
-        continue;
-      }
-      if (/^[A-Z0-9\s/_-]{4,35}:?$/.test(line) && !line.includes('HTTP')) {
-        blocks.push({ type: 'section_heading', text: line.replace(/:$/, '').trim() });
-        continue;
-      }
-    }
-
-    if (lines.length === 1) {
-      const line = lines[0];
-      const otpMatch = line.match(/^(?:Kode\s*(?:OTP|Verifikasi|Konfirmasi)?\s*[:=-]?\s*)?([0-9]{4,8}|[A-Z0-9]{4,6}-[A-Z0-9]{4,6})$/i);
-      if (otpMatch && otpMatch[1]) {
-        blocks.push({ type: 'preformatted', text: otpMatch[1].trim() });
-        continue;
-      }
-    }
-
-    const isAllListItems = lines.every((l) => /^[-*•]\s+|^\d+[.)]\s+/.test(l));
-    if (isAllListItems && lines.length > 0) {
-      const items = lines.map((l) => ({ text: l.replace(/^[-*•]\s+|^\d+[.)]\s+/, '').trim() })).filter((it) => it.text);
-      if (items.length) {
-        blocks.push({ type: 'list', items });
-        continue;
-      }
-    }
-
-    if (lines.length >= 2 && /^[^•\-\d].*:$/.test(lines[0])) {
-      const restLines = lines.slice(1);
-      const isRestList = restLines.every((l) => /^[-*•]\s+|^\d+[.)]\s+/.test(l));
-      if (isRestList) {
-        blocks.push({ type: 'paragraph', text: lines[0] });
-        const items = restLines.map((l) => ({ text: l.replace(/^[-*•]\s+|^\d+[.)]\s+/, '').trim() })).filter((it) => it.text);
-        if (items.length) {
-          blocks.push({ type: 'list', items });
-        }
-        continue;
-      }
-    }
-
-    const kvMatches = lines.map((l) => l.match(/^([A-Za-z0-9\s/_-]{2,30}):\s*(.+)$/));
-    const isAllKV = kvMatches.every(Boolean);
-    if (isAllKV && lines.length >= 2) {
-      const cells = kvMatches.map((m) => [
-        { text: m[1].trim(), is_header: true },
-        { text: m[2].trim(), is_header: false },
-      ]);
-      blocks.push({
-        type: 'table',
-        is_bordered: true,
-        is_striped: true,
-        cells,
-      });
-      continue;
-    }
-
-    const isAllQuote = lines.every((l) => /^>\s*/.test(l));
-    if (isAllQuote && lines.length > 0) {
-      const qText = lines.map((l) => l.replace(/^>\s*/, '').trim()).join('\n');
-      blocks.push({ type: 'block_quotation', text: qText });
-      continue;
-    }
-
-    if (lines.length === 2) {
-      const maybeLabel = lines[0];
-      const maybeOtp = lines[1].match(/^([0-9]{4,8}|[A-Z0-9]{4,6}-[A-Z0-9]{4,6})$/);
-      if (/kode|otp|verifikasi|token/i.test(maybeLabel) && maybeOtp) {
-        blocks.push({ type: 'paragraph', text: maybeLabel });
-        blocks.push({ type: 'preformatted', text: maybeOtp[1] });
-        continue;
-      }
-    }
-
-    blocks.push({ type: 'paragraph', text: lines.join('\n') });
-  }
-
-  return blocks.length ? blocks : [{ type: 'paragraph', text: '(tidak ada isi teks)' }];
-}
-
-function htmlToTelegramNodes(html, collectedImages) {
-  const nodes = [];
-  if (!html) return nodes;
-
-  let src = html;
-  src = src.replace(/<!--[\s\S]*?-->/g, '');
-  src = src.replace(/<script[\s\S]*?<\/script>/gi, '');
-  src = src.replace(/<style[\s\S]*?<\/style>/gi, '');
-  src = src.replace(/<head[\s\S]*?<\/head>/gi, '');
-
-  const { processedHtml, dataTables } = processTables(src);
-
-  let withAscii = processedHtml.replace(/___DATA_TABLE_(\d+)___/g, (_, id) => {
-    const idx = parseInt(id, 10);
-    if (dataTables[idx] && dataTables[idx].asciiTable) {
-      return `\n<pre>${dataTables[idx].asciiTable}</pre>\n`;
-    }
-    return '';
-  });
-
-  const tokens = withAscii.split(/(<[^>]+>)/g);
-  const listStack = [];
-  const danglingInline = [];
-  let preCodeDepth = 0;
-
-  const forceCloseDanglingInline = () => {
-    while (danglingInline.length) {
-      const tag = danglingInline.pop();
-      nodes.push(closeNode(tag));
-    }
-  };
-
-  for (const token of tokens) {
-    if (!token) continue;
-
-    if (token[0] === '<') {
-      const closing = token[1] === '/';
-      const nameMatch = token.match(/^<\/?\s*([a-zA-Z0-9]+)/);
-      if (!nameMatch) continue; // token aneh (mis. "<!DOCTYPE ...>"), abaikan
-      const tag = nameMatch[1].toLowerCase();
-      const isBlockBoundary =
-        tag === 'li' || tag === 'ul' || tag === 'ol' || tag === 'td' || tag === 'th' || /^h[1-6]$/.test(tag) || TG_BLOCK_NEWLINE_TAGS.has(tag);
-
-      if (isBlockBoundary && !closing) {
-        forceCloseDanglingInline();
-      }
-
-      if (!closing) {
-        if (tag === 'br') {
-          nodes.push(textNode('\n'));
-        } else if (tag === 'hr') {
-          nodes.push(textNode('\n──────────\n'));
-        } else if (tag === 'img') {
-          const attrs = parseTagAttrs(token);
-          const width = parseInt(attrs.width, 10);
-          const height = parseInt(attrs.height, 10);
-          const looksLikeTracker = width === 1 || height === 1;
-          if (!looksLikeTracker && attrs.src && /^https?:\/\//i.test(attrs.src) && collectedImages) {
-            collectedImages.push(attrs.src);
-          }
-          const alt = attrs.alt && decodeHtmlEntities(attrs.alt).trim();
-          if (alt) {
-            nodes.push(textNode(`[🖼 ${escapeTelegramHtml(alt)}] `));
-          } else if (!looksLikeTracker) {
-            nodes.push(textNode('[🖼 Gambar] '));
-          }
-        } else if (tag === 'a') {
-          if (preCodeDepth === 0) {
-            const attrs = parseTagAttrs(token);
-            const href = sanitizeHref(attrs.href);
-            if (href) {
-              nodes.push(openNode('a', `<a href="${escapeHtmlAttr(href)}">`));
-              danglingInline.push('a');
-            }
-          }
-        } else if (tag === 'pre' || tag === 'code') {
-          preCodeDepth++;
-          nodes.push(openNode(tag, `<${tag}>`));
-        } else if (TG_INLINE_TAGS[tag] && preCodeDepth === 0) {
-          const tgTag = TG_INLINE_TAGS[tag];
-          nodes.push(openNode(tgTag, `<${tgTag}>`));
-          danglingInline.push(tgTag);
-        } else if (tag === 'blockquote') {
-          nodes.push(textNode('\n'));
-          nodes.push(openNode('blockquote', '<blockquote>'));
-        } else if (/^h[1-6]$/.test(tag)) {
-          nodes.push(textNode('\n'));
-          nodes.push(openNode('b', '<b>'));
-          danglingInline.push('b');
-        } else if (tag === 'li') {
-          const ctx = listStack[listStack.length - 1];
-          if (ctx && ctx.type === 'ol') {
-            ctx.counter += 1;
-            nodes.push(textNode(`\n${ctx.counter}. `));
-          } else {
-            nodes.push(textNode('\n• '));
-          }
-        } else if (tag === 'ul' || tag === 'ol') {
-          listStack.push({ type: tag, counter: 0 });
-          nodes.push(textNode('\n'));
-        } else if (tag === 'td' || tag === 'th') {
-          nodes.push(textNode(' '));
-        } else if (TG_BLOCK_NEWLINE_TAGS.has(tag)) {
-          nodes.push(textNode('\n'));
-        }
-      } else {
-        if (tag === 'a' && preCodeDepth === 0) {
-          nodes.push(closeNode('a'));
-          const idx = danglingInline.lastIndexOf('a');
-          if (idx !== -1) danglingInline.splice(idx, 1);
-        } else if (tag === 'pre' || tag === 'code') {
-          preCodeDepth = Math.max(0, preCodeDepth - 1);
-          nodes.push(closeNode(tag));
-        } else if (TG_INLINE_TAGS[tag] && preCodeDepth === 0) {
-          const tgTag = TG_INLINE_TAGS[tag];
-          nodes.push(closeNode(tgTag));
-          const idx = danglingInline.lastIndexOf(tgTag);
-          if (idx !== -1) danglingInline.splice(idx, 1);
-        } else if (tag === 'blockquote') {
-          nodes.push(closeNode('blockquote'));
-          nodes.push(textNode('\n'));
-        } else if (/^h[1-6]$/.test(tag)) {
-          nodes.push(closeNode('b'));
-          nodes.push(textNode('\n'));
-          const idx = danglingInline.lastIndexOf('b');
-          if (idx !== -1) danglingInline.splice(idx, 1);
-        } else if (tag === 'ul' || tag === 'ol') {
-          listStack.pop();
-          nodes.push(textNode('\n'));
-        } else if (tag === 'li') {
-          nodes.push(textNode('\n'));
-        } else if (TG_BLOCK_NEWLINE_TAGS.has(tag)) {
-          nodes.push(textNode('\n'));
-        }
-      }
-    } else {
-      const decoded = decodeHtmlEntities(token);
-      const cleaned = preCodeDepth > 0 ? decoded : decoded.replace(/[ \t]+/g, ' ');
-      if (cleaned) nodes.push(textNode(escapeTelegramHtml(cleaned)));
-    }
-  }
-
-  forceCloseDanglingInline();
-  return normalizeTelegramNodes(nodes);
-}
-
-function normalizeTelegramNodes(nodes) {
-  const out = [];
-  for (const node of nodes) {
-    if (node.kind === 'text') {
-      let text = node.render.replace(/\n{3,}/g, '\n\n');
-      if (out.length && out[out.length - 1].kind === 'text') {
-        out[out.length - 1] = textNode(out[out.length - 1].render + text);
-        continue;
-      }
-      out.push(textNode(text));
-    } else {
-      out.push(node);
-    }
-  }
-  if (out.length && out[0].kind === 'text') out[0] = textNode(out[0].render.replace(/^\n+/, ''));
-  if (out.length) {
-    const last = out[out.length - 1];
-    if (last.kind === 'text') out[out.length - 1] = textNode(last.render.replace(/\n+$/, ''));
-  }
-  return out;
-}
-
-function smartPlainTextToTelegramNodes(text) {
-  const nodes = [];
-  if (!text || !text.trim()) {
-    return [textNode('(tidak ada isi teks)')];
-  }
-
-  const normalized = text.replace(/([^\n])\n+([-=_*~]{3,})\n+/g, '$1\n\n$2\n\n')
-                         .replace(/\n+([-=_*~]{3,})\n+([^\n])/g, '\n\n$1\n\n$2');
-
-  const rawParagraphs = normalized.split(/\r?\n\s*\r?\n/);
-
-  for (const para of rawParagraphs) {
-    const trimmedPara = para.trim();
-    if (!trimmedPara) continue;
-
-    const lines = trimmedPara.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    if (!lines.length) continue;
-
-    if (lines.length === 1 && /^[-=_*~]{3,}$/.test(lines[0])) {
-      nodes.push(textNode('\n──────────\n'));
-      continue;
-    }
-
-    if (lines.length === 1) {
-      const line = lines[0];
-      const matchHeadWrap = line.match(/^(?:[=\-#*]{2,}\s*)(.*?)(?:\s*[=\-#*]{2,})$/);
-      if (matchHeadWrap && matchHeadWrap[1].trim()) {
-        nodes.push(textNode(`\n<b>${escapeTelegramHtml(matchHeadWrap[1].trim())}</b>\n`));
-        continue;
-      }
-      const matchBracketHead = line.match(/^\[\s*([A-Za-z0-9\s/_-]{3,40})\s*\]$/);
-      if (matchBracketHead) {
-        nodes.push(textNode(`\n<b>${escapeTelegramHtml(matchBracketHead[1].trim())}</b>\n`));
-        continue;
-      }
-      if (/^[A-Z0-9\s/_-]{4,35}:?$/.test(line) && !line.includes('HTTP')) {
-        nodes.push(textNode(`\n<b>${escapeTelegramHtml(line.replace(/:$/, '').trim())}</b>\n`));
-        continue;
-      }
-    }
-
-    if (lines.length === 1) {
-      const line = lines[0];
-      const otpMatch = line.match(/^(?:Kode\s*(?:OTP|Verifikasi|Konfirmasi)?\s*[:=-]?\s*)?([0-9]{4,8}|[A-Z0-9]{4,6}-[A-Z0-9]{4,6})$/i);
-      if (otpMatch && otpMatch[1]) {
-        nodes.push(textNode(`\n<code>${escapeTelegramHtml(otpMatch[1].trim())}</code>\n`));
-        continue;
-      }
-    }
-
-    const isAllListItems = lines.every((l) => /^[-*•]\s+|^\d+[.)]\s+/.test(l));
-    if (isAllListItems && lines.length > 0) {
-      const listStr = lines.map((l) => `• ${escapeTelegramHtml(l.replace(/^[-*•]\s+|^\d+[.)]\s+/, '').trim())}`).join('\n');
-      nodes.push(textNode(`\n${listStr}\n`));
-      continue;
-    }
-
-    if (lines.length >= 2 && /^[^•\-\d].*:$/.test(lines[0])) {
-      const restLines = lines.slice(1);
-      const isRestList = restLines.every((l) => /^[-*•]\s+|^\d+[.)]\s+/.test(l));
-      if (isRestList) {
-        nodes.push(textNode(`\n${escapeTelegramHtml(lines[0])}\n`));
-        const listStr = restLines.map((l) => `• ${escapeTelegramHtml(l.replace(/^[-*•]\s+|^\d+[.)]\s+/, '').trim())}`).join('\n');
-        nodes.push(textNode(`${listStr}\n`));
-        continue;
-      }
-    }
-
-    const kvMatches = lines.map((l) => l.match(/^([A-Za-z0-9\s/_-]{2,30}):\s*(.+)$/));
-    const isAllKV = kvMatches.every(Boolean);
-    if (isAllKV && lines.length >= 2) {
-      const kvStr = kvMatches.map((m) => `<b>${escapeTelegramHtml(m[1].trim())}:</b> ${escapeTelegramHtml(m[2].trim())}`).join('\n');
-      nodes.push(textNode(`\n${kvStr}\n`));
-      continue;
-    }
-
-    const isAllQuote = lines.every((l) => /^>\s*/.test(l));
-    if (isAllQuote && lines.length > 0) {
-      const qText = lines.map((l) => l.replace(/^>\s*/, '').trim()).join('\n');
-      nodes.push(textNode(`\n<blockquote>${escapeTelegramHtml(qText)}</blockquote>\n`));
-      continue;
-    }
-
-    if (lines.length === 2) {
-      const maybeLabel = lines[0];
-      const maybeOtp = lines[1].match(/^([0-9]{4,8}|[A-Z0-9]{4,6}-[A-Z0-9]{4,6})$/);
-      if (/kode|otp|verifikasi|token/i.test(maybeLabel) && maybeOtp) {
-        nodes.push(textNode(`\n${escapeTelegramHtml(maybeLabel)}\n<code>${escapeTelegramHtml(maybeOtp[1])}</code>\n`));
-        continue;
-      }
-    }
-
-    nodes.push(textNode(`\n${escapeTelegramHtml(lines.join('\n'))}\n`));
-  }
-
-  return normalizeTelegramNodes(nodes);
-}
-
-function plainTextToTelegramNodes(text) {
-  return smartPlainTextToTelegramNodes(text);
-}
-
-function chunkTelegramHtmlNodes(nodes, maxLen) {
-  const chunks = [];
-  let current = '';
-  const stack = []; // { tag, render, closeRender }
-
-  const closeAllOpenStr = () =>
-    stack
-      .slice()
-      .reverse()
-      .map((s) => s.closeRender)
-      .join('');
-  const reopenAllStr = () => stack.map((s) => s.render).join('');
-
-  const flush = () => {
-    const finished = current + closeAllOpenStr();
-    if (finished.trim().length > 0) chunks.push(finished);
-    current = reopenAllStr();
-  };
-
-  for (const node of nodes) {
-    if (node.kind === 'text') {
-      let text = node.render;
-      while (true) {
-        const room = maxLen - current.length - closeAllOpenStr().length;
-        if (text.length <= Math.max(room, 0)) {
-          current += text;
-          break;
-        }
-        const safeRoom = Math.max(room, 1);
-        let cut = text.lastIndexOf('\n', safeRoom);
-        if (cut <= 0) cut = text.lastIndexOf(' ', safeRoom);
-        if (cut <= 0) cut = safeRoom;
-        current += text.slice(0, cut);
-        flush();
-        text = text.slice(cut).replace(/^[ \t\n]+/, '');
-        if (!text) break;
-      }
-    } else if (node.kind === 'open') {
-      if (current.length + node.render.length + closeAllOpenStr().length > maxLen) flush();
-      current += node.render;
-      stack.push(node);
-    } else if (node.kind === 'close') {
-      let foundIdx = -1;
-      for (let i = stack.length - 1; i >= 0; i--) {
-        if (stack[i].tag === node.tag) {
-          foundIdx = i;
-          break;
-        }
-      }
-      if (foundIdx === -1) continue;
-      current += node.render;
-      stack.splice(foundIdx, 1);
-      if (current.length > maxLen) flush();
-    }
-  }
-
-  const finalStr = current + closeAllOpenStr();
-  if (finalStr.trim().length > 0) chunks.push(finalStr);
-
-  return chunks.length ? chunks : ['(tidak ada isi teks)'];
-}
-
-
-// --- HTML to Plain Text ---
-
-function htmlToText(html) {
+function htmlToCleanText(html) {
   if (!html) return '';
-
   let text = html;
+
+  if (/=3D/i.test(text) || /=\r?\n/.test(text)) {
+    text = decodeUtf8QuotedPrintable(text);
+  }
 
   text = text.replace(/<!--[\s\S]*?-->/g, '');
   text = text.replace(/<script[\s\S]*?<\/script>/gi, '');
   text = text.replace(/<style[\s\S]*?<\/style>/gi, '');
+  text = text.replace(/<head[\s\S]*?<\/head>/gi, '');
 
   text = text.replace(/<a\s+[^>]*href=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi, (_, url, label) => {
     const cleanLabel = label.replace(/<[^>]+>/g, '').trim();
@@ -3146,23 +2477,152 @@ function htmlToText(html) {
     return `${cleanLabel} (${url})`;
   });
 
-  text = text.replace(/<li[^>]*>/gi, '\n- ');
+  text = text.replace(/<li[^>]*>/gi, '\n• ');
   text = text.replace(/<br\s*\/?>/gi, '\n');
   text = text.replace(/<\/(p|div|tr|table|h[1-6]|ul|ol|blockquote)>/gi, '\n\n');
   text = text.replace(/<(p|div|tr|h[1-6]|blockquote)[^>]*>/gi, '\n');
+  text = text.replace(/<(?:td|th)[^>]*>/gi, ' ');
+  text = text.replace(/<\/(?:td|th)>/gi, ' ');
 
   text = text.replace(/<[^>]+>/g, '');
   text = decodeHtmlEntities(text);
 
-  text = text
-    .split('\n')
+  return text
+    .split(/\r?\n/)
     .map((line) => line.replace(/[ \t]+/g, ' ').trim())
+    .filter((line, idx, arr) => {
+      if (!line && idx > 0 && !arr[idx - 1]) return false;
+      return true;
+    })
     .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
     .trim();
-
-  return text;
 }
+
+function htmlToText(html) {
+  return htmlToCleanText(html);
+}
+
+function cleanEmailBody(parsed) {
+  let text = '';
+  if (parsed.textHtml) {
+    text = htmlToCleanText(parsed.textHtml);
+  } else if (parsed.textPlain) {
+    let plain = parsed.textPlain;
+    if (/=3D/i.test(plain) || /=\r?\n/.test(plain)) {
+      plain = decodeUtf8QuotedPrintable(plain);
+    }
+    if (/<[a-z!][\s\S]*>/i.test(plain)) {
+      text = htmlToCleanText(plain);
+    } else {
+      text = plain.trim();
+    }
+  }
+
+  if (text && /<[^>]+>/.test(text)) {
+    text = text.replace(/<[^>]+>/g, '');
+  }
+  if (text) {
+    text = decodeHtmlEntities(text);
+  }
+  return text ? text.trim() : '';
+}
+
+function extractOtpAndLinks(text, subject = '') {
+  const combined = `${subject}\n${text}`;
+  const otps = new Set();
+
+  const gMatch = combined.match(/\bG-([0-9]{6})\b/i);
+  if (gMatch) otps.add(gMatch[0].toUpperCase());
+
+  const kwRegex = /(?:(?:kode|code)\s*(?:otp|verifikasi|konfirmasi|keamanan|akses|masuk|login)?|otp(?:\s*code)?|verification\s*code|confirm(?:ation)?\s*code|security\s*code|login\s*code|passcode|pin)\b[^\n\r:0-9]*[:=isadalah\s-]+\s*([0-9]{4,8}|[A-Z0-9]{3,4}-[A-Z0-9]{3,4})/gi;
+  let match;
+  while ((match = kwRegex.exec(combined)) !== null) {
+    const candidate = match[1].trim();
+    if (!isFalsePositiveOtp(candidate)) {
+      otps.add(candidate);
+    }
+  }
+
+  const lines = text.split(/\r?\n/);
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (/^[0-9]{4,8}$/.test(line)) {
+      if (!isFalsePositiveOtp(line)) {
+        otps.add(line);
+      }
+    } else if (/^[A-Z0-9]{3,4}-[A-Z0-9]{3,4}$/i.test(line)) {
+      if (!isFalsePositiveOtp(line)) {
+        otps.add(line);
+      }
+    }
+  }
+
+  const subjMatch = subject.match(/\b([0-9]{4,8})\b/);
+  if (subjMatch && !isFalsePositiveOtp(subjMatch[1])) {
+    otps.add(subjMatch[1]);
+  }
+
+  const urlRegex = /https?:\/\/[^\s<>"'`()]+/gi;
+  const foundUrls = text.match(urlRegex) || [];
+  let verificationLink = null;
+  const ignoredLinkKeywords = /unsubscribe|optout|subscription|privacy|terms|facebook|twitter|instagram|youtube|linkedin|github\.com\/settings/i;
+  const verifyLinkKeywords = /verify|verification|confirm|confirmation|activate|activation|token=|code=|auth\/|login\?|signup\?/i;
+
+  for (const url of foundUrls) {
+    if (ignoredLinkKeywords.test(url)) continue;
+    if (verifyLinkKeywords.test(url)) {
+      verificationLink = url;
+      break;
+    }
+  }
+
+  if (!verificationLink) {
+    for (const url of foundUrls) {
+      if (!ignoredLinkKeywords.test(url) && (url.includes('/auth') || url.includes('/user') || url.includes('/account'))) {
+        verificationLink = url;
+        break;
+      }
+    }
+  }
+
+  const otpList = Array.from(otps);
+  return {
+    primaryOtp: otpList.length ? otpList[0] : null,
+    allOtps: otpList,
+    verificationLink,
+  };
+}
+
+function isFalsePositiveOtp(code) {
+  if (!code) return true;
+  if (!/\d/.test(code)) return true;
+  if (/^(19|20)\d{2}$/.test(code)) return true;
+  if (['8080', '3000', '5000', '404', '200', '500'].includes(code)) return true;
+  return false;
+}
+
+function splitTextIntoChunks(text, chunkSize = 3200) {
+  if (!text || text.length <= chunkSize) return [text || ''];
+  const chunks = [];
+  let remaining = text;
+  while (remaining.length > 0) {
+    if (remaining.length <= chunkSize) {
+      chunks.push(remaining);
+      break;
+    }
+    let splitIdx = remaining.lastIndexOf('\n', chunkSize);
+    if (splitIdx === -1 || splitIdx < chunkSize * 0.6) {
+      splitIdx = remaining.lastIndexOf(' ', chunkSize);
+    }
+    if (splitIdx === -1 || splitIdx < chunkSize * 0.5) {
+      splitIdx = chunkSize;
+    }
+    chunks.push(remaining.slice(0, splitIdx).trim());
+    remaining = remaining.slice(splitIdx).trim();
+  }
+  return chunks;
+}
+
 
 function decodeHtmlEntities(str) {
   const namedEntities = {
