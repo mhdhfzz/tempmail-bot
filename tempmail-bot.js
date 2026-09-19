@@ -130,21 +130,21 @@ export default {
 
       const plainSnippetSource = parsed.textPlain || (parsed.textHtml ? htmlToText(parsed.textHtml) : '');
       const snippet = plainSnippetSource
-        ? plainSnippetSource.length > 300
-          ? plainSnippetSource.slice(0, 300) + '…'
+        ? plainSnippetSource.length > 200
+          ? plainSnippetSource.slice(0, 200) + '…'
           : plainSnippetSource
         : parsed.attachments.length
           ? '(Email ini hanya berisi lampiran, tanpa teks)'
           : '(tidak ada isi teks)';
-      const savedRichBlocks = emailBlocks.slice(0, 35);
-      const savedFallbackHtml = (headerHtml + chunks.slice(0, 2).join('\n\n')).slice(0, 3800);
       await pushInboxEntry(env, chatId, {
         address: to,
         from,
         subject,
         snippet,
-        richBlocks: savedRichBlocks,
-        fallbackHtml: savedFallbackHtml,
+        fullText: plainSnippetSource,
+        richBlocks: emailBlocks,
+        fallbackChunks: chunks,
+        headerHtml,
         receivedAt: Date.now(),
         hasAttachment: parsed.attachments.length > 0,
       });
@@ -636,10 +636,11 @@ async function handleCallbackQuery(query, env) {
     }
 
     if (data.startsWith('aid:')) {
-      const [addrIdxStr, pageStr, fIdxStr] = data.slice(4).split(':');
+      const [addrIdxStr, pageStr, fIdxStr, partStr] = data.slice(4).split(':');
       const addrIdx = parseInt(addrIdxStr, 10);
       const page = parseInt(pageStr, 10) || 0;
       const filteredIdx = parseInt(fIdxStr, 10);
+      const part = parseInt(partStr, 10) || 0;
       const addresses = await getUserAddresses(env, chatId);
       if (!addresses[addrIdx]) {
         await answerCallback(env, query.id, 'Alamat tidak ditemukan / sudah kadaluarsa.', true);
@@ -654,12 +655,36 @@ async function handleCallbackQuery(query, env) {
         return;
       }
       await answerCallback(env, query.id);
-      await edit(viewAddressInboxDetail(addresses, addrIdx, inbox, page, filteredIdx));
+      await edit(viewAddressInboxDetail(addresses, addrIdx, inbox, page, filteredIdx, part));
+      return;
+    }
+
+    if (data.startsWith('ai_send_all:')) {
+      const [addrIdxStr, fIdxStr] = data.slice(12).split(':');
+      const addrIdx = parseInt(addrIdxStr, 10);
+      const filteredIdx = parseInt(fIdxStr, 10);
+      const addresses = await getUserAddresses(env, chatId);
+      const addr = addresses[addrIdx];
+      if (!addr) {
+        await answerCallback(env, query.id, 'Alamat tidak ditemukan.', true);
+        return;
+      }
+      const inbox = await getInbox(env, chatId);
+      const filtered = inbox.filter((item) => item.address === addr.address);
+      const item = filtered[filteredIdx];
+      if (!item) {
+        await answerCallback(env, query.id, 'Email tidak ditemukan.', true);
+        return;
+      }
+      await answerCallback(env, query.id, '📨 Mengirim seluruh teks email ke chat...');
+      await sendFullEmailToChat(env, chatId, item);
       return;
     }
 
     if (data.startsWith('inbox_detail:')) {
-      const idx = parseInt(data.slice(13), 10);
+      const [idxStr, partStr] = data.slice(13).split(':');
+      const idx = parseInt(idxStr, 10);
+      const part = parseInt(partStr, 10) || 0;
       const inbox = await getInbox(env, chatId);
       if (!inbox[idx]) {
         await answerCallback(env, query.id, 'Riwayat tidak ditemukan.', true);
@@ -667,7 +692,20 @@ async function handleCallbackQuery(query, env) {
         return;
       }
       await answerCallback(env, query.id);
-      await edit(viewInboxDetail(inbox, idx));
+      await edit(viewInboxDetail(inbox, idx, part));
+      return;
+    }
+
+    if (data.startsWith('inbox_send_all:')) {
+      const idx = parseInt(data.slice(15), 10);
+      const inbox = await getInbox(env, chatId);
+      const item = inbox[idx];
+      if (!item) {
+        await answerCallback(env, query.id, 'Email tidak ditemukan.', true);
+        return;
+      }
+      await answerCallback(env, query.id, '📨 Mengirim seluruh teks email ke chat...');
+      await sendFullEmailToChat(env, chatId, item);
       return;
     }
 
@@ -1135,27 +1173,55 @@ function viewAddressInboxList(addresses, addrIdx, inbox, page) {
   };
 }
 
-function viewAddressInboxDetail(addresses, addrIdx, inbox, page, filteredIdx) {
+function viewAddressInboxDetail(addresses, addrIdx, inbox, page, filteredIdx, part = 0) {
   const addr = addresses[addrIdx];
   const filtered = inbox.filter((item) => item.address === addr.address);
   const item = filtered[filteredIdx];
   const attachNote = item.hasAttachment ? '📎 Ada lampiran (terkirim terpisah)' : 'Tidak ada';
 
-  let blocks = [];
-  let fallbackHtml = '';
-
+  let allBlocks = [];
   if (item.richBlocks && Array.isArray(item.richBlocks) && item.richBlocks.length) {
-    blocks = item.richBlocks;
-    fallbackHtml = item.fallbackHtml || '';
+    allBlocks = item.richBlocks;
   } else {
     const headerTableBlock = buildEmailHeaderRichBlock(item.address, item.from, item.subject, item.hasAttachment ? 1 : 0);
-    const bodyBlocks = smartPlainTextToRichBlocks(item.snippet || '(tidak ada isi)');
-    blocks = [
+    const bodyBlocks = smartPlainTextToRichBlocks(item.fullText || item.snippet || '(tidak ada isi teks)');
+    allBlocks = [
       { type: 'section_heading', text: '📧 Detail Email' },
       headerTableBlock,
       { type: 'divider' },
       ...bodyBlocks,
     ];
+  }
+
+  const BLOCK_CHUNK_SIZE = 40;
+  const totalParts = Math.max(1, Math.ceil(allBlocks.length / BLOCK_CHUNK_SIZE));
+  const safePart = Math.max(0, Math.min(part, totalParts - 1));
+  const pageBlocks = allBlocks.slice(safePart * BLOCK_CHUNK_SIZE, (safePart + 1) * BLOCK_CHUNK_SIZE);
+
+  if (safePart > 0) {
+    pageBlocks.unshift({
+      type: 'section_heading',
+      text: `📄 Isi Lanjutan (Bagian ${safePart + 1}/${totalParts})`,
+    });
+  }
+
+  let fallbackHtml = '';
+  if (item.fallbackChunks && item.fallbackChunks.length) {
+    const isFirst = safePart === 0;
+    const header = item.headerHtml || (
+      `📧 <b>Detail Email</b>\n\n` +
+      `<b>Ke:</b> <code>${escapeTelegramHtml(item.address)}</code>\n` +
+      `<b>Dari:</b> ${escapeTelegramHtml(item.from)}\n` +
+      `<b>Waktu:</b> ${escapeTelegramHtml(formatDateTime(item.receivedAt))}\n` +
+      `<b>Subjek:</b> ${escapeTelegramHtml(item.subject)}\n` +
+      (item.hasAttachment ? `📎 <i>Ada lampiran</i>\n\n` : '\n')
+    );
+    fallbackHtml = isFirst
+      ? header + (item.fallbackChunks[0] || '')
+      : `<b>(Bagian ${safePart + 1}/${totalParts})</b>\n\n` + (item.fallbackChunks[safePart] || '');
+  } else if (item.fallbackHtml) {
+    fallbackHtml = item.fallbackHtml;
+  } else {
     fallbackHtml =
       `📧 <b>Detail Email</b>\n\n` +
       `<b>Ke:</b> <code>${escapeTelegramHtml(item.address)}</code>\n` +
@@ -1163,15 +1229,30 @@ function viewAddressInboxDetail(addresses, addrIdx, inbox, page, filteredIdx) {
       `<b>Waktu:</b> ${escapeTelegramHtml(formatDateTime(item.receivedAt))}\n` +
       `<b>Subjek:</b> ${escapeTelegramHtml(item.subject)}\n` +
       (item.hasAttachment ? `📎 <i>Ada lampiran (sudah dikirim terpisah)</i>\n\n` : '\n') +
-      `<blockquote>${escapeTelegramHtml(item.snippet || '(tidak ada isi)')}</blockquote>`;
+      `${escapeTelegramHtml(item.fullText || item.snippet || '(tidak ada isi teks)')}`;
   }
 
-  const rows = [
+  const rows = [];
+  if (totalParts > 1) {
+    const navRow = [];
+    if (safePart > 0) {
+      navRow.push({ text: `◀ Bagian ${safePart}`, callback_data: `aid:${addrIdx}:${page}:${filteredIdx}:${safePart - 1}` });
+    }
+    navRow.push({ text: `📄 ${safePart + 1}/${totalParts}`, callback_data: `aid:${addrIdx}:${page}:${filteredIdx}:${safePart}` });
+    if (safePart < totalParts - 1) {
+      navRow.push({ text: `Bagian ${safePart + 2} ▶`, callback_data: `aid:${addrIdx}:${page}:${filteredIdx}:${safePart + 1}` });
+    }
+    rows.push(navRow);
+    rows.push([{ text: `📨 Kirim Seluruh Teks (${totalParts} Bagian)`, callback_data: `ai_send_all:${addrIdx}:${filteredIdx}` }]);
+  }
+
+  rows.push(
     [{ text: '⬅️ Kembali ke Email Masuk', callback_data: `ai:${addrIdx}:${page}` }],
-    [{ text: '🏠 Menu Utama', callback_data: 'm' }],
-  ];
+    [{ text: '🏠 Menu Utama', callback_data: 'm' }]
+  );
+
   return {
-    richMessage: { blocks },
+    richMessage: { blocks: pageBlocks },
     fallbackHtml,
     text: fallbackHtml,
     keyboard: { inline_keyboard: rows },
@@ -1326,26 +1407,54 @@ function viewInboxList(inbox, page) {
   };
 }
 
-function viewInboxDetail(inbox, idx) {
+function viewInboxDetail(inbox, idx, part = 0) {
   const item = inbox[idx];
   const page = Math.floor(idx / INBOX_PAGE_SIZE);
   const attachNote = item.hasAttachment ? '📎 Ada lampiran (terkirim terpisah)' : 'Tidak ada';
 
-  let blocks = [];
-  let fallbackHtml = '';
-
+  let allBlocks = [];
   if (item.richBlocks && Array.isArray(item.richBlocks) && item.richBlocks.length) {
-    blocks = item.richBlocks;
-    fallbackHtml = item.fallbackHtml || '';
+    allBlocks = item.richBlocks;
   } else {
     const headerTableBlock = buildEmailHeaderRichBlock(item.address, item.from, item.subject, item.hasAttachment ? 1 : 0);
-    const bodyBlocks = smartPlainTextToRichBlocks(item.snippet || '(tidak ada isi)');
-    blocks = [
+    const bodyBlocks = smartPlainTextToRichBlocks(item.fullText || item.snippet || '(tidak ada isi teks)');
+    allBlocks = [
       { type: 'section_heading', text: `📧 Detail Email #${idx + 1}` },
       headerTableBlock,
       { type: 'divider' },
       ...bodyBlocks,
     ];
+  }
+
+  const BLOCK_CHUNK_SIZE = 40;
+  const totalParts = Math.max(1, Math.ceil(allBlocks.length / BLOCK_CHUNK_SIZE));
+  const safePart = Math.max(0, Math.min(part, totalParts - 1));
+  const pageBlocks = allBlocks.slice(safePart * BLOCK_CHUNK_SIZE, (safePart + 1) * BLOCK_CHUNK_SIZE);
+
+  if (safePart > 0) {
+    pageBlocks.unshift({
+      type: 'section_heading',
+      text: `📄 Isi Lanjutan (Bagian ${safePart + 1}/${totalParts})`,
+    });
+  }
+
+  let fallbackHtml = '';
+  if (item.fallbackChunks && item.fallbackChunks.length) {
+    const isFirst = safePart === 0;
+    const header = item.headerHtml || (
+      `📧 <b>Detail Email #${idx + 1}</b>\n\n` +
+      `<b>Ke:</b> <code>${escapeTelegramHtml(item.address)}</code>\n` +
+      `<b>Dari:</b> ${escapeTelegramHtml(item.from)}\n` +
+      `<b>Waktu:</b> ${escapeTelegramHtml(formatDateTime(item.receivedAt))}\n` +
+      `<b>Subjek:</b> ${escapeTelegramHtml(item.subject)}\n` +
+      (item.hasAttachment ? `📎 <i>Ada lampiran (sudah dikirim terpisah saat email masuk)</i>\n\n` : '\n')
+    );
+    fallbackHtml = isFirst
+      ? header + (item.fallbackChunks[0] || '')
+      : `<b>(Bagian ${safePart + 1}/${totalParts})</b>\n\n` + (item.fallbackChunks[safePart] || '');
+  } else if (item.fallbackHtml) {
+    fallbackHtml = item.fallbackHtml;
+  } else {
     fallbackHtml =
       `📧 <b>Detail Email #${idx + 1}</b>\n\n` +
       `<b>Ke:</b> <code>${escapeTelegramHtml(item.address)}</code>\n` +
@@ -1353,16 +1462,74 @@ function viewInboxDetail(inbox, idx) {
       `<b>Waktu:</b> ${escapeTelegramHtml(formatDateTime(item.receivedAt))}\n` +
       `<b>Subjek:</b> ${escapeTelegramHtml(item.subject)}\n` +
       (item.hasAttachment ? `📎 <i>Ada lampiran (sudah dikirim terpisah saat email masuk)</i>\n\n` : '\n') +
-      `<blockquote>${escapeTelegramHtml(item.snippet || '(tidak ada isi)')}</blockquote>`;
+      `${escapeTelegramHtml(item.fullText || item.snippet || '(tidak ada isi teks)')}`;
   }
 
-  const rows = [[{ text: '⬅️ Kembali ke Riwayat', callback_data: `i:${page}` }], [{ text: '🏠 Menu Utama', callback_data: 'm' }]];
+  const rows = [];
+  if (totalParts > 1) {
+    const navRow = [];
+    if (safePart > 0) {
+      navRow.push({ text: `◀ Bagian ${safePart}`, callback_data: `inbox_detail:${idx}:${safePart - 1}` });
+    }
+    navRow.push({ text: `📄 ${safePart + 1}/${totalParts}`, callback_data: `inbox_detail:${idx}:${safePart}` });
+    if (safePart < totalParts - 1) {
+      navRow.push({ text: `Bagian ${safePart + 2} ▶`, callback_data: `inbox_detail:${idx}:${safePart + 1}` });
+    }
+    rows.push(navRow);
+    rows.push([{ text: `📨 Kirim Seluruh Teks (${totalParts} Bagian)`, callback_data: `inbox_send_all:${idx}` }]);
+  }
+
+  rows.push(
+    [{ text: '⬅️ Kembali ke Riwayat', callback_data: `i:${page}` }],
+    [{ text: '🏠 Menu Utama', callback_data: 'm' }]
+  );
+
   return {
-    richMessage: { blocks },
+    richMessage: { blocks: pageBlocks },
     fallbackHtml,
     text: fallbackHtml,
     keyboard: { inline_keyboard: rows },
   };
+}
+
+async function sendFullEmailToChat(env, chatId, item) {
+  const blocks = (item.richBlocks && item.richBlocks.length)
+    ? item.richBlocks
+    : smartPlainTextToRichBlocks(item.fullText || item.snippet || '(tidak ada isi teks)');
+
+  const BLOCK_CHUNK_SIZE = 40;
+  const totalBlockChunks = Math.ceil(blocks.length / BLOCK_CHUNK_SIZE);
+  const chunks = (item.fallbackChunks && item.fallbackChunks.length)
+    ? item.fallbackChunks
+    : chunkTelegramHtmlNodes(smartPlainTextToTelegramNodes(item.fullText || item.snippet || '(tidak ada isi teks)'), 3500);
+
+  const headerHtml = item.headerHtml || (
+    `📧 <b>Salinan Lengkap Email</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `<b>Ke:</b> <code>${escapeTelegramHtml(item.address)}</code>\n` +
+    `<b>Dari:</b> ${escapeTelegramHtml(item.from)}\n` +
+    `<b>Subjek:</b> <b>${escapeTelegramHtml(item.subject)}</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━\n\n`
+  );
+
+  if (totalBlockChunks <= 1) {
+    await sendRichOrHtmlMessage(env, chatId, { blocks }, headerHtml + (chunks[0] || ''));
+  } else {
+    for (let b = 0; b < totalBlockChunks; b++) {
+      const isFirst = b === 0;
+      const blockChunk = blocks.slice(b * BLOCK_CHUNK_SIZE, (b + 1) * BLOCK_CHUNK_SIZE);
+      if (!isFirst) {
+        blockChunk.unshift({
+          type: 'section_heading',
+          text: `(Bagian ${b + 1}/${totalBlockChunks})`,
+        });
+      }
+      const chunkFallback = isFirst
+        ? headerHtml + (chunks[0] || '')
+        : `<b>(Bagian ${b + 1}/${totalBlockChunks})</b>\n\n` + (chunks[b] || '');
+      await sendRichOrHtmlMessage(env, chatId, { blocks: blockChunk }, chunkFallback);
+    }
+  }
 }
 
 function viewAdminStats(totalUsers, totalCreated, activeLabel, totalEmails) {
