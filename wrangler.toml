@@ -1,0 +1,11 @@
+name = "tempmail-bot"
+main = "tempmail-bot.js"
+compatibility_date = "2024-09-01"
+
+[[kv_namespaces]]
+binding = "TEMPMAIL_KV"
+id = ""
+
+[vars]
+TEMPMAIL_DOMAIN = ""
+ADMIN_CHAT_ID = ""
