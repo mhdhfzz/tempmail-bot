@@ -1,21 +1,26 @@
 # Bot Temp-Mail Telegram (Cloudflare Workers)
 
-Bot Telegram untuk membuat alamat email sementara (*temp mail*), di mana seluruh email yang masuk langsung diteruskan ke chat Telegram secara *real-time* — lengkap dengan format teks kaya (*Rich Messages*), tabel data asli, album foto tanpa batas, dan lampiran file.
+Bot Telegram untuk membuat alamat email sementara (*temp mail*), di mana seluruh email yang masuk langsung diteruskan ke chat Telegram secara *real-time* — lengkap dengan ekstraksi otomatis kode OTP / verifikasi, fitur 1-tap copy, tautan konfirmasi, pembersihan total tag HTML, dan penerusan lampiran file.
 
 Berjalan di atas **Cloudflare Workers** (serverless) dan **Cloudflare KV**. Sangat cepat, hemat sumber daya, dan gratis untuk penggunaan pribadi maupun tim kecil tanpa perlu mengelola server.
+
+[![Demo Bot Telegram](https://img.shields.io/badge/Demo%20Bot-@VexTempMail__bot-0088cc?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/VexTempMail_bot)
+
+> 🤖 **Coba Sekarang:** Anda dapat langsung mencoba demo bot ini di Telegram: [@VexTempMail_bot](https://t.me/VexTempMail_bot)
 
 ---
 
 ## Fitur Utama
 
-- **Telegram Rich Messages**: Tabel data asli (`InputRichBlockTable`), heading bertingkat, daftar poin, kutipan, dan garis pemisah. Tabel email (seperti rincian tagihan atau konfirmasi OTP) disajikan rapi sebagai grid asli Telegram.
-- **Album Foto Tanpa Batas**: Seluruh gambar inline pada email dikirimkan otomatis sebagai Album Foto Telegram (`sendMediaGroup`, maks. 10 foto per album) agar chat tetap rapi dan tidak banjir notifikasi.
-- **Fallback HTML Otomatis**: Jika aplikasi Telegram klien belum mendukung Rich Blocks tertentu, sistem otomatis beralih ke rendering HTML aman (termasuk tabel ASCII monospaced berbingkai kotak).
+- **Fokus Kode OTP & Verifikasi**: Otomatis mendeteksi kode OTP (4–8 digit angka, format strip `123-456`, dsb) dan menyajikannya paling atas.
+- **Salin Kode 1 Kali Ketuk (1-Tap Copy)**: Kode OTP diformat `<code>OTP</code>` sehingga cukup diketuk 1 kali di HP/PC untuk langsung menyalinnya, ditambah tombol instan `[ 📋 Salin: OTP ]` di keyboard (`copy_text`).
+- **Deteksi Tautan Verifikasi Otomatis**: Otomatis mendeteksi tautan konfirmasi pendaftaran/aktivasi akun (`verify`, `confirm`, `token=`) dan menyediakan tombol sekali klik `[ 🔗 Buka Tautan Verifikasi ]`.
+- **Pembersihan Total Tag HTML**: Seluruh tag HTML yang mengganggu, header MIME mentah, dan artefak quoted-printable dibersihkan 100% menjadi teks yang rapi dan mudah dibaca.
 - **Alamat Kustom & Acak Natural**: Buat alamat dengan nama pilihan sendiri atau otomatis dibuatkan nama natural yang mudah dibaca (kombinasi kata & angka pendek).
 - **Masa Aktif Fleksibel**: Pilihan durasi masa aktif alamat (6, 12, 24, 48, hingga 72 jam).
 - **Multi-Domain**: Mendukung lebih dari satu domain email sekaligus.
 - **Lampiran Lengkap**: PDF, dokumen Office, arsip ZIP, dan file lampiran lainnya otomatis diteruskan sebagai dokumen Telegram.
-- **Navigasi Interaktif**: Antarmuka responsif berbasis tombol (*inline keyboard*) tanpa mengotori ruang obrolan (*in-place edit*).
+- **Riwayat & Navigasi Interaktif**: Antarmuka responsif berbasis tombol (*inline keyboard*) dengan paginasi riwayat email tanpa batas pemotongan teks.
 - **Panel & Notifikasi Admin**: Notifikasi penggunaan real-time, ringkasan statistik bot (`/stats`), ubah QRIS donasi via chat (`/setqris`), serta manajemen domain (`/adddomain`, `/removedomain`).
 
 ---
@@ -169,10 +174,7 @@ Agar daftar perintah otomatis muncul di Telegram:
 
 ## Detail Teknis
 
-- **Telegram Bot API**: Menggunakan metode `sendRichMessage` dan `editMessageText` (`rich_message`) dengan struktur blok:
-  - `InputRichBlockTable` (tabel data multi-kolom bergaris & bergaris belang).
-  - `InputRichBlockSectionHeading` (judul section).
-  - `InputRichBlockList` (daftar berbutir/bernomor).
-  - `InputRichBlockQuote` (blok kutipan isi email).
-  - `InputRichBlockDivider` (garis pemisah antar section).
-- **Pengiriman Media**: Menggunakan `sendMediaGroup` untuk mengelompokkan seluruh gambar inline pada email ke dalam album (maksimal 10 gambar per album) sebelum meneruskan file lampiran dengan `sendDocument`.
+- **Ekstraksi OTP & Tautan Verifikasi**: Menggunakan pola regex cerdas dengan sistem deteksi berlapis (kata kunci konteks, format alfanumerik, format angka berdiri sendiri, serta penyaring *false positive* seperti tahun dan kode status).
+- **Pembersihan HTML**: Menghapus seluruh tag HTML bersarang, skrip, dan gaya, serta mendekode *Quoted-Printable* dan entitas UTF-8 menjadi teks polos yang bersih.
+- **Telegram 1-Tap Copy**: Memanfaatkan tag `<code>` bawaan Telegram yang mendukung salin 1 ketukan pada aplikasi Android, iOS, dan Desktop, didukung tombol interaktif `copy_text` Telegram Bot API 7.0+.
+- **Penerusan File Dokumen**: File lampiran (PDF, arsip, gambar) diteruskan utuh menggunakan `sendDocument` ke chat pengguna.
