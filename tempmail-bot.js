@@ -2182,6 +2182,14 @@ async function sendDocumentToTelegram(env, chatId, filename, mimeType, bytes) {
 
 // --- MIME Parser ---
 
+function findHeaderBodySplit(raw) {
+  const idxRN = raw.indexOf('\r\n\r\n');
+  const idxN = raw.indexOf('\n\n');
+  if (idxRN === -1) return idxN;
+  if (idxN === -1) return idxRN;
+  return Math.min(idxRN, idxN);
+}
+
 function parseRawEmail(raw) {
   const { headers } = parseMimeNode(raw);
 
@@ -2193,6 +2201,38 @@ function parseRawEmail(raw) {
   const result = { textPlain: '', textHtml: '', attachments: [] };
   collectMimeContent(raw, result);
 
+  // Deteksi cerdas jika tidak ada textHtml tetapi textPlain berisi konten MIME bersarang atau HTML mentah
+  if (!result.textHtml && result.textPlain) {
+    const tp = result.textPlain;
+
+    // 1. Cek apakah textPlain berisi embedded MIME headers (seperti Content-Type: text/html)
+    if (/content-type:\s*text\/html/i.test(tp) || /content-transfer-encoding:/i.test(tp)) {
+      const innerParsed = parseMimeNode(tp);
+      const innerCt = (innerParsed.headers['content-type'] || '').toLowerCase();
+      const innerEnc = (innerParsed.headers['content-transfer-encoding'] || '').toLowerCase();
+      if (innerCt.includes('text/html') || /<!doctype html|<html/i.test(innerParsed.body)) {
+        result.textHtml = decodeBodyByEncoding(innerParsed.body, innerEnc);
+        result.textPlain = '';
+      }
+    }
+
+    // 2. Cek apakah textPlain langsung berisi HTML mentah (dimulai atau berisi <!doctype html atau <html)
+    if (!result.textHtml && /<!doctype html\b|<html\b/i.test(tp)) {
+      let htmlCandidate = tp;
+      if (/=3D/i.test(htmlCandidate) || /=\r?\n/.test(htmlCandidate)) {
+        htmlCandidate = decodeUtf8QuotedPrintable(htmlCandidate);
+      }
+      const matchStart = htmlCandidate.match(/<!doctype html[\s\S]*$/i) || htmlCandidate.match(/<html[\s\S]*$/i);
+      if (matchStart) {
+        result.textHtml = matchStart[0];
+        result.textPlain = htmlCandidate.slice(0, matchStart.index).trim();
+      } else {
+        result.textHtml = htmlCandidate;
+        result.textPlain = '';
+      }
+    }
+  }
+
   return {
     headers: decodedHeaders,
     textPlain: result.textPlain ? result.textPlain.trim() : '',
@@ -2202,7 +2242,7 @@ function parseRawEmail(raw) {
 }
 
 function parseMimeNode(rawNode) {
-  const idx = rawNode.indexOf('\r\n\r\n') !== -1 ? rawNode.indexOf('\r\n\r\n') : rawNode.indexOf('\n\n');
+  const idx = findHeaderBodySplit(rawNode);
   if (idx === -1) return { headers: {}, body: '' };
 
   const headerBlock = rawNode.slice(0, idx);
@@ -2226,16 +2266,21 @@ function collectMimeContent(rawNode, result) {
   const { headers, body } = parseMimeNode(rawNode);
   const contentType = headers['content-type'] || 'text/plain';
   const contentTypeBase = contentType.split(';')[0].trim().toLowerCase();
-  const boundaryMatch = contentType.match(/boundary="?([^";]+)"?/i);
+  const boundaryMatch = contentType.match(/boundary\s*=\s*(?:"([^"]+)"|'([^']+)'|([^;\s\r\n]+))/i);
+  const boundary = boundaryMatch ? (boundaryMatch[1] || boundaryMatch[2] || boundaryMatch[3]) : null;
 
-  if (contentTypeBase.startsWith('multipart/') && boundaryMatch) {
-    const boundary = boundaryMatch[1];
+  if (contentTypeBase.startsWith('multipart/') && boundary) {
     const rawParts = body.split(`--${boundary}`);
     for (const rp of rawParts) {
       const trimmedPart = rp.trim();
       if (!trimmedPart || trimmedPart === '--') continue;
       collectMimeContent(trimmedPart, result);
     }
+    return;
+  }
+
+  if (contentTypeBase === 'message/rfc822') {
+    collectMimeContent(body, result);
     return;
   }
 
