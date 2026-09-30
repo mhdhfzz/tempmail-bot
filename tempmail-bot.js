@@ -15,6 +15,26 @@ const PENDING_TTL_SECONDS = 300;
 
 export default {
   async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    // Handle CORS Preflight
+    if (request.method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: CORS_HEADERS,
+      });
+    }
+
+    // Mini App REST API Router
+    if (url.pathname.startsWith('/api/')) {
+      return handleApiRequest(request, env, ctx, url);
+    }
+
+    // Serve Mini App SPA (HTML/CSS/JS)
+    if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/app' || url.pathname === '/miniapp')) {
+      return renderMiniAppResponse(env);
+    }
+
     if (request.method !== 'POST') {
       return new Response('Bot temp-mail aktif.', { status: 200 });
     }
@@ -129,12 +149,16 @@ export default {
           ? '(Email ini hanya berisi lampiran, tanpa teks)'
           : '(tidak ada isi pesan)';
 
+      const rawHtml = (parsed.textHtml || (/<[a-z!][\s\S]*>/i.test(parsed.textPlain) ? parsed.textPlain : '') || '').slice(0, 300000);
+
       await pushInboxEntry(env, chatId, {
+        id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         address: to,
         from,
         subject,
         snippet,
         cleanText,
+        rawHtml,
         primaryOtp: primaryOtp || null,
         allOtps: allOtps || [],
         verificationLink: verificationLink || null,
@@ -1892,6 +1916,9 @@ async function deleteAllAddresses(env, chatId) {
 }
 
 async function pushInboxEntry(env, chatId, entry) {
+  if (!entry.id) {
+    entry.id = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  }
   const raw = await env.TEMPMAIL_KV.get(`inbox:${chatId}`);
   let list = [];
   try {
@@ -1908,7 +1935,13 @@ async function getInbox(env, chatId) {
   const raw = await env.TEMPMAIL_KV.get(`inbox:${chatId}`);
   if (!raw) return [];
   try {
-    return JSON.parse(raw);
+    const list = JSON.parse(raw);
+    return Array.isArray(list)
+      ? list.map((item, idx) => ({
+          id: item.id || `msg_${item.receivedAt || idx}`,
+          ...item,
+        }))
+      : [];
   } catch {
     return [];
   }
@@ -2738,4 +2771,368 @@ async function verifyTelegramWebAppData(initDataString, botToken, maxAgeSeconds 
     return { valid: false, user: null, error: err.message };
   }
 }
+
+// --- Telegram Mini App REST API & Server ---
+
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, X-Telegram-Init-Data, Authorization',
+};
+
+function jsonResponse(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      'Content-Type': 'application/json',
+      ...CORS_HEADERS,
+    },
+  });
+}
+
+async function authenticateApiRequest(request, env) {
+  let initData = request.headers.get('X-Telegram-Init-Data');
+  if (!initData) {
+    const url = new URL(request.url);
+    initData = url.searchParams.get('initData');
+  }
+
+  // Support local development / debug bypass if DEV_AUTH_BYPASS is set
+  if (!initData && env.DEV_AUTH_BYPASS) {
+    const devChatId = parseInt(env.ADMIN_CHAT_ID || '123456789', 10);
+    return {
+      ok: true,
+      user: { id: devChatId, first_name: 'DevUser', username: 'devuser' },
+      chatId: devChatId,
+      isAdmin: true,
+    };
+  }
+
+  if (!initData) {
+    return { ok: false, error: 'Header X-Telegram-Init-Data tidak ditemukan.', status: 401 };
+  }
+
+  const verified = await verifyTelegramWebAppData(initData, env.TELEGRAM_BOT_TOKEN);
+  if (!verified.valid || !verified.user) {
+    return { ok: false, error: 'Autentikasi Telegram tidak valid atau kadaluarsa.', status: 403 };
+  }
+
+  const chatId = verified.user.id;
+  const isAdmin = Boolean(env.ADMIN_CHAT_ID && String(env.ADMIN_CHAT_ID) === String(chatId));
+
+  return {
+    ok: true,
+    user: verified.user,
+    chatId,
+    isAdmin,
+  };
+}
+
+async function handleApiRequest(request, env, ctx, url) {
+  const path = url.pathname.replace(/^\/api/, '');
+
+  // 1. QRIS public asset endpoint
+  if (path === '/qris' && request.method === 'GET') {
+    try {
+      const bytes = await env.TEMPMAIL_KV.get('assets:qris', { type: 'arrayBuffer' });
+      if (!bytes) {
+        return jsonResponse({ ok: false, error: 'QRIS belum dikonfigurasi oleh admin' }, 404);
+      }
+      return new Response(bytes, {
+        status: 200,
+        headers: {
+          'Content-Type': 'image/png',
+          'Cache-Control': 'public, max-age=3600',
+          ...CORS_HEADERS,
+        },
+      });
+    } catch (err) {
+      return jsonResponse({ ok: false, error: err.message }, 500);
+    }
+  }
+
+  // 2. Autentikasi semua endpoint /api lainnya
+  const auth = await authenticateApiRequest(request, env);
+  if (!auth.ok) {
+    return jsonResponse({ ok: false, error: auth.error }, auth.status || 401);
+  }
+
+  const chatId = auth.chatId;
+
+  // Track user jika baru pertama kali membuka miniapp
+  await trackUserAndMaybeNotify(env, chatId, auth.user);
+
+  try {
+    // GET /api/bootstrap
+    if (path === '/bootstrap' && request.method === 'GET') {
+      const [addresses, domains, inboxRaw, qrisBytes] = await Promise.all([
+        getUserAddresses(env, chatId),
+        getDomainList(env),
+        getInbox(env, chatId),
+        env.TEMPMAIL_KV.get('assets:qris', { type: 'arrayBuffer' }),
+      ]);
+
+      let stats = null;
+      if (auth.isAdmin) {
+        const [totalUsers, totalAddressesCreated, totalEmailsForwarded] = await Promise.all([
+          getCounter(env, 'stats:totalUsers'),
+          getCounter(env, 'stats:totalAddressesCreated'),
+          getCounter(env, 'stats:totalEmailsForwarded'),
+        ]);
+        stats = { totalUsers, totalAddressesCreated, totalEmailsForwarded };
+      }
+
+      return jsonResponse({
+        ok: true,
+        user: auth.user,
+        chatId,
+        isAdmin: auth.isAdmin,
+        addresses,
+        domains,
+        inbox: inboxRaw,
+        stats,
+        qrisAvailable: Boolean(qrisBytes),
+        config: {
+          maxAddresses: MAX_ADDRESSES_PER_USER,
+          durationOptionsHours: DURATION_OPTIONS_HOURS,
+          maxInboxHistory: MAX_INBOX_HISTORY,
+        },
+      });
+    }
+
+    // GET /api/addresses
+    if (path === '/addresses' && request.method === 'GET') {
+      const [addresses, domains] = await Promise.all([
+        getUserAddresses(env, chatId),
+        getDomainList(env),
+      ]);
+      return jsonResponse({ ok: true, addresses, domains });
+    }
+
+    // POST /api/addresses
+    if (path === '/addresses' && request.method === 'POST') {
+      let body = {};
+      try {
+        body = await request.json();
+      } catch {
+        return jsonResponse({ ok: false, error: 'JSON payload tidak valid' }, 400);
+      }
+
+      const durationHours = parseInt(body.durationHours, 10);
+      const chosenDuration = DURATION_OPTIONS_HOURS.includes(durationHours) ? durationHours : 24;
+      const ttlSeconds = chosenDuration * 3600;
+
+      let customAlias = null;
+      if (body.mode === 'custom') {
+        customAlias = sanitizeAlias(body.customName || '');
+        if (!customAlias) {
+          return jsonResponse(
+            { ok: false, error: 'Alias harus 3-20 karakter alfanumerik (huruf, angka, titik, strip).' },
+            400
+          );
+        }
+      }
+
+      const domain = body.domain ? sanitizeDomain(body.domain) : null;
+      const result = await createNewAddress(env, chatId, customAlias, ttlSeconds, domain);
+      if (result.error === 'limit') {
+        return jsonResponse(
+          { ok: false, error: `Batas maksimum ${MAX_ADDRESSES_PER_USER} alamat telah tercapai. Hapus salah satu alamat terlebih dahulu.` },
+          400
+        );
+      }
+      if (result.error === 'taken') {
+        return jsonResponse(
+          { ok: false, error: 'Alamat tersebut sudah digunakan. Silakan gunakan nama alias lain.' },
+          400
+        );
+      }
+
+      await incrementCounter(env, 'stats:totalAddressesCreated');
+      const updatedAddresses = await getUserAddresses(env, chatId);
+      return jsonResponse({ ok: true, address: result.address, addresses: updatedAddresses }, 201);
+    }
+
+    // DELETE /api/addresses
+    if (path === '/addresses' && request.method === 'DELETE') {
+      let body = {};
+      try {
+        body = await request.json();
+      } catch {
+        const addrParam = url.searchParams.get('address');
+        const allParam = url.searchParams.get('all');
+        body = { address: addrParam, all: allParam === 'true' };
+      }
+
+      if (body.all) {
+        await deleteAllAddresses(env, chatId);
+        return jsonResponse({ ok: true, addresses: [] });
+      }
+
+      if (!body.address) {
+        return jsonResponse({ ok: false, error: 'Parameter address diperlukan.' }, 400);
+      }
+
+      const success = await deleteAddress(env, chatId, body.address);
+      if (!success) {
+        return jsonResponse({ ok: false, error: 'Alamat tidak ditemukan atau bukan milik Anda.' }, 404);
+      }
+
+      const remaining = await getUserAddresses(env, chatId);
+      return jsonResponse({ ok: true, addresses: remaining });
+    }
+
+    // POST /api/addresses/extend
+    if (path === '/addresses/extend' && request.method === 'POST') {
+      let body = {};
+      try {
+        body = await request.json();
+      } catch {
+        return jsonResponse({ ok: false, error: 'JSON payload tidak valid' }, 400);
+      }
+
+      if (!body.address) {
+        return jsonResponse({ ok: false, error: 'Parameter address diperlukan.' }, 400);
+      }
+
+      const success = await extendAddress(env, chatId, body.address);
+      if (!success) {
+        return jsonResponse({ ok: false, error: 'Gagal memperpanjang alamat.' }, 400);
+      }
+
+      const updated = await getUserAddresses(env, chatId);
+      return jsonResponse({ ok: true, addresses: updated });
+    }
+
+    // GET /api/inbox
+    if (path === '/inbox' && request.method === 'GET') {
+      const allInbox = await getInbox(env, chatId);
+      const addressFilter = url.searchParams.get('address');
+      const filtered = addressFilter ? allInbox.filter((item) => item.address === addressFilter) : allInbox;
+      return jsonResponse({ ok: true, inbox: filtered });
+    }
+
+    // DELETE /api/inbox
+    if (path === '/inbox' && request.method === 'DELETE') {
+      let body = {};
+      try {
+        body = await request.json();
+      } catch {
+        const idParam = url.searchParams.get('id');
+        const clearAllParam = url.searchParams.get('clearAll');
+        body = { id: idParam, clearAll: clearAllParam === 'true' };
+      }
+
+      if (body.clearAll) {
+        await env.TEMPMAIL_KV.delete(`inbox:${chatId}`);
+        return jsonResponse({ ok: true, inbox: [] });
+      }
+
+      if (body.id) {
+        const currentInbox = await getInbox(env, chatId);
+        const updated = currentInbox.filter(
+          (item) => item.id !== body.id && (!item.receivedAt || String(item.receivedAt) !== String(body.id))
+        );
+        await env.TEMPMAIL_KV.put(`inbox:${chatId}`, JSON.stringify(updated), {
+          expirationTtl: INBOX_TTL_SECONDS,
+        });
+        return jsonResponse({ ok: true, inbox: updated });
+      }
+
+      return jsonResponse({ ok: false, error: 'Parameter id atau clearAll diperlukan.' }, 400);
+    }
+
+    // --- Admin Endpoints ---
+    if (path.startsWith('/admin/')) {
+      if (!auth.isAdmin) {
+        return jsonResponse({ ok: false, error: 'Akses ditolak: Hanya untuk Admin.' }, 403);
+      }
+
+      if (path === '/admin/stats' && request.method === 'GET') {
+        const [totalUsers, totalAddressesCreated, totalEmailsForwarded] = await Promise.all([
+          getCounter(env, 'stats:totalUsers'),
+          getCounter(env, 'stats:totalAddressesCreated'),
+          getCounter(env, 'stats:totalEmailsForwarded'),
+        ]);
+        return jsonResponse({ ok: true, stats: { totalUsers, totalAddressesCreated, totalEmailsForwarded } });
+      }
+
+      if (path === '/admin/domains' && request.method === 'GET') {
+        const [allDomains, extraRaw] = await Promise.all([
+          getDomainList(env),
+          env.TEMPMAIL_KV.get('config:extraDomains'),
+        ]);
+        let extraDomains = [];
+        try {
+          extraDomains = extraRaw ? JSON.parse(extraRaw) : [];
+        } catch {
+          extraDomains = [];
+        }
+        return jsonResponse({ ok: true, allDomains, extraDomains });
+      }
+
+      if (path === '/admin/domains' && request.method === 'POST') {
+        const body = await request.json().catch(() => ({}));
+        const domain = sanitizeDomain(body.domain);
+        if (!domain) {
+          return jsonResponse({ ok: false, error: 'Format domain tidak valid.' }, 400);
+        }
+        const added = await addExtraDomain(env, domain);
+        if (!added) {
+          return jsonResponse({ ok: false, error: 'Domain tersebut sudah terdaftar.' }, 400);
+        }
+        const all = await getDomainList(env);
+        return jsonResponse({ ok: true, domain, allDomains: all });
+      }
+
+      if (path === '/admin/domains' && request.method === 'DELETE') {
+        const body = await request.json().catch(() => ({}));
+        const domain = sanitizeDomain(body.domain || url.searchParams.get('domain'));
+        if (!domain) {
+          return jsonResponse({ ok: false, error: 'Format domain tidak valid.' }, 400);
+        }
+        const removed = await removeExtraDomain(env, domain);
+        if (!removed) {
+          return jsonResponse({ ok: false, error: 'Domain tidak ditemukan di daftar domain tambahan.' }, 404);
+        }
+        const all = await getDomainList(env);
+        return jsonResponse({ ok: true, domain, allDomains: all });
+      }
+
+      return jsonResponse({ ok: false, error: 'Admin endpoint tidak ditemukan.' }, 404);
+    }
+
+    return jsonResponse({ ok: false, error: 'Endpoint API tidak ditemukan.' }, 404);
+  } catch (err) {
+    console.error('API Error:', err);
+    return jsonResponse({ ok: false, error: err.message || 'Internal Server Error' }, 500);
+  }
+}
+
+function renderMiniAppResponse(env) {
+  const html = renderMiniAppHtml(env);
+  return new Response(html, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-cache',
+    },
+  });
+}
+
+function renderMiniAppHtml(env) {
+  return `<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>VexTempMail Mini App</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <div id="app">VexTempMail Mini App Initializing...</div>
+</body>
+</html>`;
+}
+
 
