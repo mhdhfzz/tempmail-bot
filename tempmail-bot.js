@@ -4244,7 +4244,7 @@ function renderMiniAppHtml(env) {
 
       <div class="form-group" id="custom-alias-wrap" style="display: none;">
         <label class="form-label">Nama Alias</label>
-        <input type="text" class="form-input" id="custom-alias-input" placeholder="contoh: hafiz.project">
+        <input type="text" class="form-input" id="custom-alias-input" placeholder="contoh: merahbiru">
         <span style="font-size: 11px; color: var(--text-dim); margin-top: 4px; display: block;">3-20 karakter alfanumerik.</span>
       </div>
 
@@ -4806,7 +4806,7 @@ function renderMiniAppHtml(env) {
             document.addEventListener('click', function(e) {
               var a = e.target.closest('a');
               if (a && a.href) {
-                if (/^https?:\\\\/\\\\//i.test(a.href) || /^mailto:/i.test(a.href) || /^tel:/i.test(a.href)) {
+                if (/^https?:\\/\\//i.test(a.href) || /^mailto:/i.test(a.href) || /^tel:/i.test(a.href)) {
                   e.preventDefault();
                   try {
                     window.parent.postMessage({ type: 'open_url', url: a.href }, '*');
@@ -4998,7 +4998,7 @@ function renderMiniAppHtml(env) {
 
     function openExternalUrl(url) {
       if (!url) return;
-      if (!/^https?:\\\\/\\\\//i.test(url) && !/^mailto:/i.test(url) && !/^tel:/i.test(url)) return;
+      if (!/^https?:\\/\\//i.test(url) && !/^mailto:/i.test(url) && !/^tel:/i.test(url)) return;
       try {
         if (tg && typeof tg.openLink === 'function') {
           tg.openLink(url);
@@ -5019,8 +5019,8 @@ function renderMiniAppHtml(env) {
           trailing = lastChar + trailing;
           url = url.slice(0, -1);
         } else if (lastChar === ')') {
-          const openCount = (url.match(/\\\\(/g) || []).length;
-          const closeCount = (url.match(/\\\\)/g) || []).length;
+          const openCount = (url.match(/\\(/g) || []).length;
+          const closeCount = (url.match(/\\)/g) || []).length;
           if (closeCount > openCount) {
             trailing = lastChar + trailing;
             url = url.slice(0, -1);
@@ -5036,7 +5036,7 @@ function renderMiniAppHtml(env) {
 
     function linkifyHtml(text = '') {
       if (!text) return '';
-      const urlRegex = /\\\\bhttps?:\\\\/\\\\/[^\\\\s<>"'\`]+/gi;
+      const urlRegex = /\\bhttps?:\\/\\/[^\\s<>"'\`]+/gi;
       let lastIndex = 0;
       let out = '';
       let match;
