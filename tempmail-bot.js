@@ -2665,3 +2665,77 @@ function escapeTelegramHtml(str = '') {
 function escapeHtmlAttr(str = '') {
   return escapeTelegramHtml(str).replace(/"/g, '&quot;');
 }
+
+// --- Telegram WebApp initData Cryptographic Validator ---
+
+async function verifyTelegramWebAppData(initDataString, botToken, maxAgeSeconds = 86400) {
+  if (!initDataString || !botToken) return { valid: false, user: null };
+
+  try {
+    const params = new URLSearchParams(initDataString);
+    const hash = params.get('hash');
+    if (!hash) return { valid: false, user: null };
+
+    params.delete('hash');
+
+    const keys = Array.from(params.keys()).sort();
+    const dataCheckString = keys.map((key) => `${key}=${params.get(key)}`).join('\n');
+
+    const enc = new TextEncoder();
+
+    const webAppDataKey = await crypto.subtle.importKey(
+      'raw',
+      enc.encode('WebAppData'),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+    const secretKeyBytes = await crypto.subtle.sign('HMAC', webAppDataKey, enc.encode(botToken));
+
+    const secretKey = await crypto.subtle.importKey(
+      'raw',
+      secretKeyBytes,
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+
+    const signatureBytes = await crypto.subtle.sign('HMAC', secretKey, enc.encode(dataCheckString));
+    const calculatedHash = Array.from(new Uint8Array(signatureBytes))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+
+    if (calculatedHash.toLowerCase() !== hash.toLowerCase()) {
+      return { valid: false, user: null };
+    }
+
+    const authDateStr = params.get('auth_date');
+    const authDate = authDateStr ? parseInt(authDateStr, 10) : 0;
+    if (maxAgeSeconds > 0 && authDate > 0) {
+      const now = Math.floor(Date.now() / 1000);
+      if (now - authDate > maxAgeSeconds) {
+        return { valid: false, user: null, expired: true };
+      }
+    }
+
+    let user = null;
+    const userStr = params.get('user');
+    if (userStr) {
+      try {
+        user = JSON.parse(userStr);
+      } catch {
+        user = null;
+      }
+    }
+
+    return {
+      valid: true,
+      user,
+      authDate,
+      queryId: params.get('query_id') || null,
+    };
+  } catch (err) {
+    return { valid: false, user: null, error: err.message };
+  }
+}
+
