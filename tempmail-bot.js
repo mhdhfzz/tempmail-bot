@@ -252,7 +252,7 @@ async function handleTelegramMessage(msg, env) {
       }
 
       if (!workerUrl) {
-        await sendPlainMessage(
+        await sendHtmlMessage(
           env,
           chatId,
           '⚠️ URL Worker belum diketahui.\n\nKirim perintah dengan menyertakan URL Worker Anda:\n<code>/setupapp https://nama-worker.username.workers.dev</code>\n\natau buka Web App Anda di browser satu kali.'
@@ -262,7 +262,7 @@ async function handleTelegramMessage(msg, env) {
 
       const success = await configureTelegramMenuButton(env, workerUrl);
       if (success) {
-        await sendPlainMessage(
+        await sendHtmlMessage(
           env,
           chatId,
           `✅ <b>Tombol Menu Mini App Berhasil Diaktifkan!</b>\n\n` +
