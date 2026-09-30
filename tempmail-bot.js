@@ -239,20 +239,38 @@ async function handleTelegramMessage(msg, env) {
     }
 
     case '/setupapp': {
-      if (String(env.ADMIN_CHAT_ID) !== String(chatId)) {
-        await sendPlainMessage(env, chatId, '⛔ Perintah ini hanya untuk admin.');
+      if (env.ADMIN_CHAT_ID && !isAdmin(env, chatId)) {
+        await sendPlainMessage(env, chatId, '⛔ Perintah ini hanya untuk admin (ADMIN_CHAT_ID).');
         break;
       }
-      const workerUrl = await getWorkerUrl(env);
+
+      let workerUrl = (arg && /^https?:\/\//i.test(arg.trim())) ? arg.trim().replace(/\/+$/, '') : null;
+      if (workerUrl) {
+        await env.TEMPMAIL_KV.put('config:workerUrl', workerUrl);
+      } else {
+        workerUrl = await getWorkerUrl(env);
+      }
+
       if (!workerUrl) {
-        await sendPlainMessage(env, chatId, '⚠️ WORKER_URL belum tersimpan. Silakan buka Web App terlebih dahulu atau atur secret WORKER_URL.');
+        await sendPlainMessage(
+          env,
+          chatId,
+          '⚠️ URL Worker belum diketahui.\n\nKirim perintah dengan menyertakan URL Worker Anda:\n<code>/setupapp https://nama-worker.username.workers.dev</code>\n\natau buka Web App Anda di browser satu kali.'
+        );
         break;
       }
+
       const success = await configureTelegramMenuButton(env, workerUrl);
       if (success) {
-        await sendPlainMessage(env, chatId, `✅ Tombol Menu Mini App berhasil diaktifkan dengan URL:\n<code>${escapeTelegramHtml(workerUrl)}</code>`);
+        await sendPlainMessage(
+          env,
+          chatId,
+          `✅ <b>Tombol Menu Mini App Berhasil Diaktifkan!</b>\n\n` +
+          `URL: <code>${escapeTelegramHtml(workerUrl)}</code>\n\n` +
+          `Tombol Menu di pojok kiri bawah chat sekarang sudah terhubung ke Mini App Anda.`
+        );
       } else {
-        await sendPlainMessage(env, chatId, '⚠️ Gagal mengatur tombol Menu Mini App ke Telegram API.');
+        await sendPlainMessage(env, chatId, '⚠️ Gagal mengatur tombol Menu Mini App ke Telegram API. Pastikan TELEGRAM_BOT_TOKEN valid.');
       }
       break;
     }
