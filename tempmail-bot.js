@@ -6,16 +6,23 @@
 
 const ADDRESS_TTL_SECONDS = 24 * 60 * 60;
 const DURATION_OPTIONS_HOURS = [6, 12, 24, 48, 72];
-const MAX_ADDRESSES_PER_USER = 8;
-const ADDR_PAGE_SIZE = 4;
-const MAX_INBOX_HISTORY = 12;
-const INBOX_PAGE_SIZE = 4;
+const MAX_ADDRESSES_PER_USER = 12;
+const ADDR_PAGE_SIZE = 6;
+const MAX_INBOX_HISTORY = 24;
+const INBOX_PAGE_SIZE = 6;
 const INBOX_TTL_SECONDS = 30 * 24 * 60 * 60;
 const PENDING_TTL_SECONDS = 300;
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+
+    // Track and store workerUrl in KV for Telegram WebApp buttons
+    if (url.origin && !url.origin.includes('localhost') && !url.origin.includes('127.0.0.1')) {
+      if (ctx && typeof ctx.waitUntil === 'function') {
+        ctx.waitUntil(env.TEMPMAIL_KV.put('config:workerUrl', url.origin));
+      }
+    }
 
     // Handle CORS Preflight
     if (request.method === 'OPTIONS') {
@@ -118,7 +125,8 @@ export default {
           `<a href="${escapeHtmlAttr(verificationLink)}">${escapeTelegramHtml(truncateForButton(verificationLink, 50))}</a>\n\n`;
       }
 
-      const keyboard = emailActionsKeyboard(to, primaryOtp, verificationLink);
+      const workerUrl = await getWorkerUrl(env);
+      const keyboard = emailActionsKeyboard(to, primaryOtp, verificationLink, workerUrl);
 
       // 4. Kirim teks bersih ke Telegram (pecah pesan jika sangat panjang)
       const bodyText = cleanText || (parsed.attachments.length ? '(Email ini hanya berisi lampiran, tanpa teks)' : '(tidak ada isi pesan)');
@@ -221,8 +229,31 @@ async function handleTelegramMessage(msg, env) {
     case '/start':
     case '/help':
     case '/menu': {
-      const view = command === '/help' ? viewHelp() : viewMenu(firstName);
+      const workerUrl = await getWorkerUrl(env);
+      if (command === '/start' && workerUrl) {
+        configureTelegramMenuButton(env, workerUrl).catch(() => { });
+      }
+      const view = command === '/help' ? viewHelp(workerUrl) : viewMenu(firstName, '', workerUrl);
       await sendView(env, chatId, view);
+      break;
+    }
+
+    case '/setupapp': {
+      if (String(env.ADMIN_CHAT_ID) !== String(chatId)) {
+        await sendPlainMessage(env, chatId, '⛔ Perintah ini hanya untuk admin.');
+        break;
+      }
+      const workerUrl = await getWorkerUrl(env);
+      if (!workerUrl) {
+        await sendPlainMessage(env, chatId, '⚠️ WORKER_URL belum tersimpan. Silakan buka Web App terlebih dahulu atau atur secret WORKER_URL.');
+        break;
+      }
+      const success = await configureTelegramMenuButton(env, workerUrl);
+      if (success) {
+        await sendPlainMessage(env, chatId, `✅ Tombol Menu Mini App berhasil diaktifkan dengan URL:\n<code>${escapeTelegramHtml(workerUrl)}</code>`);
+      } else {
+        await sendPlainMessage(env, chatId, '⚠️ Gagal mengatur tombol Menu Mini App ke Telegram API.');
+      }
       break;
     }
 
@@ -429,17 +460,18 @@ async function handleCallbackQuery(query, env) {
   if (!chatId || !messageId) return;
 
   const edit = (view) => editView(env, chatId, messageId, view);
+  const workerUrl = await getWorkerUrl(env);
 
   try {
     if (data === 'm') {
       await answerCallback(env, query.id);
-      await edit(viewMenu());
+      await edit(viewMenu('', '', workerUrl));
       return;
     }
 
     if (data === 'help') {
       await answerCallback(env, query.id);
-      await edit(viewHelp());
+      await edit(viewHelp(workerUrl));
       return;
     }
 
@@ -494,12 +526,12 @@ async function handleCallbackQuery(query, env) {
       const result = await createNewAddress(env, chatId, alias, hours * 3600, domain);
       if (result.error === 'limit') {
         await answerCallback(env, query.id, `Maksimal ${MAX_ADDRESSES_PER_USER} alamat aktif.`, true);
-        await edit(viewMenu());
+        await edit(viewMenu('', '', workerUrl));
         return;
       }
       if (result.error === 'taken') {
         await answerCallback(env, query.id, `Alamat "${alias}" baru saja dipakai orang lain. Coba lagi.`, true);
-        await edit(viewMenu());
+        await edit(viewMenu('', '', workerUrl));
         return;
       }
 
@@ -623,7 +655,7 @@ async function handleCallbackQuery(query, env) {
       const beforeCount = (await getUserAddresses(env, chatId)).length;
       await deleteAllAddresses(env, chatId);
       await answerCallback(env, query.id, '🗑️ Semua alamat dihapus', true);
-      await edit(viewMenu());
+      await edit(viewMenu('', '', workerUrl));
 
       await notifyAdmin(
         env,
@@ -758,7 +790,7 @@ async function clearPending(env, chatId) {
 
 // --- View Builders ---
 
-function viewMenu(firstName = '', note = '') {
+function viewMenu(firstName = '', note = '', workerUrl = null) {
   const greeting = firstName ? `Halo, ${firstName} 👋` : 'Halo 👋';
   const desc = 'Buat alamat email sementara dan terima emailnya langsung di chat ini.';
   const blocks = [
@@ -781,11 +813,11 @@ function viewMenu(firstName = '', note = '') {
     richMessage: { blocks },
     fallbackHtml,
     text: fallbackHtml,
-    keyboard: mainMenuKeyboard(),
+    keyboard: mainMenuKeyboard(workerUrl),
   };
 }
 
-function viewHelp() {
+function viewHelp(workerUrl = null) {
   const blocks = [
     { type: 'section_heading', text: '❓ Panduan Penggunaan' },
     {
@@ -798,6 +830,7 @@ function viewHelp() {
         { text: '/delete <alamat> — Hapus alamat tertentu' },
         { text: '/deleteall — Hapus semua alamat sekaligus' },
         { text: '/donasi — Dukung operasional bot' },
+        { text: '/setupapp — Setup tombol Menu Mini App (admin)' },
       ],
     },
     { type: 'divider' },
@@ -806,6 +839,7 @@ function viewHelp() {
       text:
         `Maksimal ${MAX_ADDRESSES_PER_USER} alamat aktif sekaligus (berlaku 6-72 jam).\n\n` +
         `📥 Cek email per alamat:\nBuka "Alamat Saya" → pilih alamat → "Cek Email Masuk".\n\n` +
+        `📱 Mini App:\nBuka Mini App untuk tampilan email asli bergaya Gmail dengan filter OTP otomatis!\n\n` +
         `📎 Lampiran email otomatis dikirim sebagai file terpisah.\n🖼 Gambar email dikirim rapi dalam album foto.`,
     },
   ];
@@ -819,17 +853,17 @@ function viewHelp() {
     `• <code>/inbox</code> — Lihat riwayat semua email\n` +
     `• <code>/delete &lt;alamat&gt;</code> — Hapus alamat tertentu\n` +
     `• <code>/deleteall</code> — Hapus semua alamat sekaligus\n` +
-    `• <code>/donasi</code> — Dukung operasional bot\n\n` +
+    `• <code>/donasi</code> — Dukung operasional bot\n` +
+    `• <code>/setupapp</code> — Setup tombol Menu Mini App (admin)\n\n` +
     `<blockquote>Maksimal ${MAX_ADDRESSES_PER_USER} alamat aktif (6-72 jam).\n` +
-    `Buka "Alamat Saya" → pilih alamat → "Cek Email Masuk" untuk melihat inbox khusus alamat tsb.\n` +
-    `Lampiran otomatis diteruskan sebagai file.</blockquote>\n\n` +
+    `Gunakan Mini App untuk tampilan email asli bergaya Gmail.</blockquote>\n\n` +
     `Atau cukup gunakan tombol navigasi di bawah 👇`;
 
   return {
     richMessage: { blocks },
     fallbackHtml,
     text: fallbackHtml,
-    keyboard: mainMenuKeyboard(),
+    keyboard: mainMenuKeyboard(workerUrl),
   };
 }
 
@@ -1602,21 +1636,54 @@ function viewAdminStats(totalUsers, totalCreated, activeLabel, totalEmails) {
   };
 }
 
-function mainMenuKeyboard() {
-  return {
-    inline_keyboard: [
-      [{ text: '🆕 Buat Alamat Baru', callback_data: 'new' }],
-      [
-        { text: '📮 Alamat Saya', callback_data: 'l:0' },
-        { text: '📥 Semua Email', callback_data: 'i:0' },
-      ],
-      [{ text: '❓ Bantuan', callback_data: 'help' }],
-      [{ text: '💝 Donasi', callback_data: 'donasi' }],
-    ],
-  };
+async function getWorkerUrl(env) {
+  if (env.WORKER_URL) return env.WORKER_URL;
+  try {
+    return await env.TEMPMAIL_KV.get('config:workerUrl');
+  } catch {
+    return null;
+  }
 }
 
-function emailActionsKeyboard(address, primaryOtp = null, verificationLink = null) {
+async function configureTelegramMenuButton(env, workerUrl) {
+  if (!workerUrl || !env.TELEGRAM_BOT_TOKEN) return false;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/setChatMenuButton`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        menu_button: {
+          type: 'web_app',
+          text: 'Mini App',
+          web_app: {
+            url: workerUrl,
+          },
+        },
+      }),
+    });
+    return res.ok;
+  } catch (err) {
+    console.error('Gagal configureTelegramMenuButton:', err);
+    return false;
+  }
+}
+
+function mainMenuKeyboard(workerUrl = null) {
+  const inline_keyboard = [];
+  if (workerUrl) {
+    inline_keyboard.push([{ text: '📱 Buka Mini App', web_app: { url: workerUrl } }]);
+  }
+  inline_keyboard.push([{ text: '🆕 Buat Alamat Baru', callback_data: 'new' }]);
+  inline_keyboard.push([
+    { text: '📮 Alamat Saya', callback_data: 'l:0' },
+    { text: '📥 Semua Email', callback_data: 'i:0' },
+  ]);
+  inline_keyboard.push([{ text: '❓ Bantuan', callback_data: 'help' }]);
+  inline_keyboard.push([{ text: '💝 Donasi', callback_data: 'donasi' }]);
+  return { inline_keyboard };
+}
+
+function emailActionsKeyboard(address, primaryOtp = null, verificationLink = null, workerUrl = null) {
   const rows = [];
   if (primaryOtp) {
     rows.push([
@@ -1631,6 +1698,14 @@ function emailActionsKeyboard(address, primaryOtp = null, verificationLink = nul
       {
         text: '🔗 Buka Tautan Verifikasi',
         url: verificationLink,
+      },
+    ]);
+  }
+  if (workerUrl) {
+    rows.push([
+      {
+        text: '📱 Buka di Mini App (Format Asli)',
+        web_app: { url: workerUrl },
       },
     ]);
   }
@@ -1938,9 +2013,9 @@ async function getInbox(env, chatId) {
     const list = JSON.parse(raw);
     return Array.isArray(list)
       ? list.map((item, idx) => ({
-          id: item.id || `msg_${item.receivedAt || idx}`,
-          ...item,
-        }))
+        id: item.id || `msg_${item.receivedAt || idx}`,
+        ...item,
+      }))
       : [];
   } catch {
     return [];
@@ -4020,7 +4095,7 @@ function renderMiniAppHtml(env) {
 
       <div class="form-group" id="custom-alias-wrap" style="display: none;">
         <label class="form-label">Nama Alias</label>
-        <input type="text" class="form-input" id="custom-alias-input" placeholder="contoh: hafiz.project">
+        <input type="text" class="form-input" id="custom-alias-input" placeholder="contoh: masbrotuts">
         <span style="font-size: 11px; color: var(--text-dim); margin-top: 4px; display: block;">3-20 karakter alfanumerik.</span>
       </div>
 
