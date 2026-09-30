@@ -1,8 +1,6 @@
 /**
  * Bot Telegram Temp-Mail (Cloudflare Workers)
- * Menggunakan Telegram Rich Messages (tabel asli, heading, format terstruktur)
  */
-
 
 const ADDRESS_TTL_SECONDS = 24 * 60 * 60;
 const DURATION_OPTIONS_HOURS = [6, 12, 24, 48, 72];
@@ -130,16 +128,16 @@ export default {
 
       // 4. Kirim teks bersih ke Telegram (pecah pesan jika sangat panjang)
       const bodyText = cleanText || (parsed.attachments.length ? '(Email ini hanya berisi lampiran, tanpa teks)' : '(tidak ada isi pesan)');
-      const chunks = splitTextIntoChunks(bodyText, 3200);
+      const chunks = splitTextIntoChunks(bodyText, 2500);
 
       const firstMsgHtml = chunks.length > 1
-        ? headerHtml + `📝 <b>Isi Pesan (Bagian 1/${chunks.length}):</b>\n\n${escapeTelegramHtml(chunks[0])}`
-        : headerHtml + `📝 <b>Isi Pesan:</b>\n\n${escapeTelegramHtml(chunks[0])}`;
+        ? headerHtml + `📝 <b>Isi Pesan (Bagian 1/${chunks.length}):</b>\n\n${linkifyTelegramHtml(chunks[0])}`
+        : headerHtml + `📝 <b>Isi Pesan:</b>\n\n${linkifyTelegramHtml(chunks[0])}`;
 
       await sendHtmlMessage(env, chatId, firstMsgHtml, keyboard);
 
       for (let i = 1; i < chunks.length; i++) {
-        const partHtml = `<b>(Bagian ${i + 1}/${chunks.length})</b>\n\n${escapeTelegramHtml(chunks[i])}`;
+        const partHtml = `<b>(Bagian ${i + 1}/${chunks.length})</b>\n\n${linkifyTelegramHtml(chunks[i])}`;
         await sendHtmlMessage(env, chatId, partHtml);
       }
 
@@ -1260,7 +1258,7 @@ function viewAddressInboxDetail(addresses, addrIdx, inbox, page, filteredIdx, pa
     verificationLink = extracted.verificationLink;
   }
 
-  const chunks = splitTextIntoChunks(cleanText, 3000);
+  const chunks = splitTextIntoChunks(cleanText, 2500);
   const totalParts = Math.max(1, chunks.length);
   const safePart = Math.max(0, Math.min(part, totalParts - 1));
 
@@ -1291,7 +1289,7 @@ function viewAddressInboxDetail(addresses, addrIdx, inbox, page, filteredIdx, pa
     detailHtml += `📝 <b>Isi Pesan:</b>\n\n`;
   }
 
-  detailHtml += escapeTelegramHtml(chunks[safePart] || '');
+  detailHtml += linkifyTelegramHtml(chunks[safePart] || '');
 
   const rows = [];
   if (primaryOtp) {
@@ -1498,7 +1496,7 @@ function viewInboxDetail(inbox, idx, part = 0) {
     verificationLink = extracted.verificationLink;
   }
 
-  const chunks = splitTextIntoChunks(cleanText, 3000);
+  const chunks = splitTextIntoChunks(cleanText, 2500);
   const totalParts = Math.max(1, chunks.length);
   const safePart = Math.max(0, Math.min(part, totalParts - 1));
 
@@ -1529,7 +1527,7 @@ function viewInboxDetail(inbox, idx, part = 0) {
     detailHtml += `📝 <b>Isi Pesan:</b>\n\n`;
   }
 
-  detailHtml += escapeTelegramHtml(chunks[safePart] || '');
+  detailHtml += linkifyTelegramHtml(chunks[safePart] || '');
 
   const rows = [];
   if (primaryOtp) {
@@ -1584,7 +1582,7 @@ async function sendFullEmailToChat(env, chatId, item) {
     verificationLink = extracted.verificationLink;
   }
 
-  const chunks = splitTextIntoChunks(cleanText, 3500);
+  const chunks = splitTextIntoChunks(cleanText, 2500);
 
   let headerHtml =
     `📧 <b>Salinan Lengkap Email</b>\n` +
@@ -1609,8 +1607,8 @@ async function sendFullEmailToChat(env, chatId, item) {
   for (let b = 0; b < chunks.length; b++) {
     const isFirst = b === 0;
     const msg = isFirst
-      ? headerHtml + `📝 <b>Isi Pesan:</b>\n\n` + escapeTelegramHtml(chunks[0])
-      : `<b>(Bagian ${b + 1}/${chunks.length})</b>\n\n` + escapeTelegramHtml(chunks[b]);
+      ? headerHtml + `📝 <b>Isi Pesan:</b>\n\n` + linkifyTelegramHtml(chunks[0])
+      : `<b>(Bagian ${b + 1}/${chunks.length})</b>\n\n` + linkifyTelegramHtml(chunks[b]);
 
     const keyboard = isFirst && primaryOtp ? {
       inline_keyboard: [
@@ -2779,7 +2777,7 @@ function decodeHtmlEntities(str) {
     });
 }
 
-// --- HTML Escape Helpers ---
+// --- HTML Escape & Linkify Helpers ---
 
 function escapeTelegramHtml(str = '') {
   return String(str)
@@ -2790,6 +2788,59 @@ function escapeTelegramHtml(str = '') {
 
 function escapeHtmlAttr(str = '') {
   return escapeTelegramHtml(str).replace(/"/g, '&quot;');
+}
+
+function cleanTrailingUrl(rawUrl) {
+  let url = rawUrl;
+  let trailing = '';
+  while (url.length > 0) {
+    const lastChar = url[url.length - 1];
+    if (['.', ',', ';', ':', '!', '?', ']', '>', '<', '"', "'"].includes(lastChar)) {
+      trailing = lastChar + trailing;
+      url = url.slice(0, -1);
+    } else if (lastChar === ')') {
+      const openCount = (url.match(/\(/g) || []).length;
+      const closeCount = (url.match(/\)/g) || []).length;
+      if (closeCount > openCount) {
+        trailing = lastChar + trailing;
+        url = url.slice(0, -1);
+      } else {
+        break;
+      }
+    } else {
+      break;
+    }
+  }
+  return { url, trailing };
+}
+
+function linkifyTelegramHtml(text = '') {
+  if (!text) return '';
+  const urlRegex = /\bhttps?:\/\/[^\s<>"'`]+/gi;
+  let lastIndex = 0;
+  let out = '';
+  let match;
+
+  while ((match = urlRegex.exec(text)) !== null) {
+    const matchStart = match.index;
+    const matchEnd = urlRegex.lastIndex;
+    const plainPrefix = text.slice(lastIndex, matchStart);
+    out += escapeTelegramHtml(plainPrefix);
+
+    const { url, trailing } = cleanTrailingUrl(match[0]);
+    if (url) {
+      const href = escapeHtmlAttr(url);
+      const label = escapeTelegramHtml(url);
+      out += `<a href="${href}">${label}</a>`;
+    }
+    if (trailing) {
+      out += escapeTelegramHtml(trailing);
+    }
+    lastIndex = matchEnd;
+  }
+
+  out += escapeTelegramHtml(text.slice(lastIndex));
+  return out;
 }
 
 // --- Telegram WebApp initData Cryptographic Validator ---
@@ -3716,6 +3767,20 @@ function renderMiniAppHtml(env) {
       line-height: 1.6;
     }
 
+    .clean-text-sheet a {
+      color: var(--accent-cyan);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      word-break: break-all;
+      cursor: pointer;
+      transition: color 0.2s;
+    }
+
+    .clean-text-sheet a:hover {
+      color: #ffffff;
+      text-shadow: 0 0 8px rgba(0, 242, 254, 0.6);
+    }
+
     /* Bottom Navigation Dock */
     .nav-dock {
       position: fixed;
@@ -4036,7 +4101,7 @@ function renderMiniAppHtml(env) {
 
       <!-- HTML Sheet (Gmail iframe) -->
       <div id="reader-html-container" class="email-sheet">
-        <iframe id="reader-iframe" class="email-iframe" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>
+        <iframe id="reader-iframe" class="email-iframe" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation"></iframe>
       </div>
 
       <!-- Clean Text Sheet -->
@@ -4113,7 +4178,7 @@ function renderMiniAppHtml(env) {
 
       <div class="form-group" id="custom-alias-wrap" style="display: none;">
         <label class="form-label">Nama Alias</label>
-        <input type="text" class="form-input" id="custom-alias-input" placeholder="contoh: masbrotuts">
+        <input type="text" class="form-input" id="custom-alias-input" placeholder="contoh: hafiz.project">
         <span style="font-size: 11px; color: var(--text-dim); margin-top: 4px; display: block;">3-20 karakter alfanumerik.</span>
       </div>
 
@@ -4513,6 +4578,10 @@ function renderMiniAppHtml(env) {
         if (email.verificationLink) {
           verifyBtn.href = email.verificationLink;
           verifyBtn.style.display = 'inline-flex';
+          verifyBtn.onclick = (e) => {
+            e.preventDefault();
+            openExternalUrl(email.verificationLink);
+          };
         } else {
           verifyBtn.style.display = 'none';
         }
@@ -4522,9 +4591,12 @@ function renderMiniAppHtml(env) {
 
       // Render into Sandboxed Iframe (Gmail style)
       const iframe = document.getElementById('reader-iframe');
-      const htmlContent = email.rawHtml || (email.cleanText ? \`<pre style="font-family: inherit; white-space: pre-wrap; word-break: break-word; padding: 15px; color: #1e293b;">\${escapeHtml(email.cleanText)}</pre>\` : '<p style="padding: 20px; color: #64748b;">(Pesan kosong)</p>');
+      const fallbackCleanHtml = email.cleanText 
+        ? \`<pre style="font-family: inherit; white-space: pre-wrap; word-break: break-word; padding: 15px; color: #1e293b;">\${linkifyHtml(email.cleanText)}</pre>\`
+        : '<p style="padding: 20px; color: #64748b;">(Pesan kosong)</p>';
+      const htmlContent = email.rawHtml ? email.rawHtml : fallbackCleanHtml;
 
-      // Inject HTML safely into iframe srcdoc with responsive mobile styling
+      // Inject HTML safely into iframe srcdoc with responsive mobile styling & link click interceptor
       const iframeDocument = \`
         <!DOCTYPE html>
         <html>
@@ -4544,14 +4616,32 @@ function renderMiniAppHtml(env) {
             table { max-width: 100% !important; }
             a { color: #0284c7; }
           </style>
+          <script>
+            document.addEventListener('click', function(e) {
+              var a = e.target.closest('a');
+              if (a && a.href) {
+                if (/^https?:\\\\/\\\\//i.test(a.href) || /^mailto:/i.test(a.href) || /^tel:/i.test(a.href)) {
+                  e.preventDefault();
+                  try {
+                    window.parent.postMessage({ type: 'open_url', url: a.href }, '*');
+                  } catch (err) {
+                    window.open(a.href, '_blank');
+                  }
+                }
+              }
+            }, true);
+          <\` + \`/script>
         </head>
         <body>\${htmlContent}</body>
         </html>
       \`;
       iframe.srcdoc = iframeDocument;
 
-      // Clean text sheet fallback
-      document.getElementById('reader-clean-text').textContent = email.cleanText || '(tidak ada isi pesan teks)';
+      // Clean text sheet fallback with clickable links
+      const cleanContainer = document.getElementById('reader-clean-text');
+      cleanContainer.innerHTML = email.cleanText 
+        ? linkifyHtml(email.cleanText) 
+        : '<span style="color: var(--text-muted);">(tidak ada isi pesan teks)</span>';
 
       // Reset toggle to HTML view
       setReaderViewMode('html');
@@ -4579,6 +4669,20 @@ function renderMiniAppHtml(env) {
 
     document.getElementById('toggle-view-html').addEventListener('click', () => setReaderViewMode('html'));
     document.getElementById('toggle-view-text').addEventListener('click', () => setReaderViewMode('text'));
+
+    document.getElementById('reader-clean-text').addEventListener('click', (e) => {
+      const a = e.target.closest('a');
+      if (a && a.href) {
+        e.preventDefault();
+        openExternalUrl(a.href);
+      }
+    });
+
+    window.addEventListener('message', (event) => {
+      if (event && event.data && event.data.type === 'open_url' && event.data.url) {
+        openExternalUrl(event.data.url);
+      }
+    });
 
     document.getElementById('reader-back-btn').addEventListener('click', () => switchView('inbox'));
 
@@ -4706,6 +4810,73 @@ function renderMiniAppHtml(env) {
       return \`\${diffDay}h lalu\`;
     }
 
+    function openExternalUrl(url) {
+      if (!url) return;
+      if (!/^https?:\\\\/\\\\//i.test(url) && !/^mailto:/i.test(url) && !/^tel:/i.test(url)) return;
+      try {
+        if (tg && typeof tg.openLink === 'function') {
+          tg.openLink(url);
+          return;
+        }
+      } catch (err) {
+        console.warn('tg.openLink error:', err);
+      }
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
+
+    function cleanTrailingUrl(rawUrl) {
+      let url = rawUrl;
+      let trailing = '';
+      while (url.length > 0) {
+        const lastChar = url[url.length - 1];
+        if (['.', ',', ';', ':', '!', '?', ']', '>', '<', '"', "'"].includes(lastChar)) {
+          trailing = lastChar + trailing;
+          url = url.slice(0, -1);
+        } else if (lastChar === ')') {
+          const openCount = (url.match(/\\\\(/g) || []).length;
+          const closeCount = (url.match(/\\\\)/g) || []).length;
+          if (closeCount > openCount) {
+            trailing = lastChar + trailing;
+            url = url.slice(0, -1);
+          } else {
+            break;
+          }
+        } else {
+          break;
+        }
+      }
+      return { url, trailing };
+    }
+
+    function linkifyHtml(text = '') {
+      if (!text) return '';
+      const urlRegex = /\\\\bhttps?:\\\\/\\\\/[^\\\\s<>"'\`]+/gi;
+      let lastIndex = 0;
+      let out = '';
+      let match;
+
+      while ((match = urlRegex.exec(text)) !== null) {
+        const matchStart = match.index;
+        const matchEnd = urlRegex.lastIndex;
+        const plainPrefix = text.slice(lastIndex, matchStart);
+        out += escapeHtml(plainPrefix);
+
+        const { url, trailing } = cleanTrailingUrl(match[0]);
+        if (url) {
+          const href = escapeHtml(url);
+          const label = escapeHtml(url);
+          out += \`<a href="\${href}" target="_blank" rel="noopener noreferrer">\${label}</a>\`;
+        }
+        if (trailing) {
+          out += escapeHtml(trailing);
+        }
+        lastIndex = matchEnd;
+      }
+
+      out += escapeHtml(text.slice(lastIndex));
+      return out;
+    }
+
     function escapeHtml(str) {
       if (!str) return '';
       return String(str)
@@ -4722,5 +4893,3 @@ function renderMiniAppHtml(env) {
 </html>
 `;
 }
-
-
