@@ -3125,14 +3125,1509 @@ function renderMiniAppHtml(env) {
 <html lang="id">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>VexTempMail Mini App</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>VexTempMail</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root {
+      --bg-primary: #080c14;
+      --bg-secondary: #0f172a;
+      --surface-glass: rgba(255, 255, 255, 0.05);
+      --surface-glass-hover: rgba(255, 255, 255, 0.09);
+      --surface-glass-active: rgba(255, 255, 255, 0.14);
+      --border-glass: rgba(255, 255, 255, 0.10);
+      --border-glass-bright: rgba(255, 255, 255, 0.22);
+      --accent-cyan: #00f2fe;
+      --accent-violet: #7f00ff;
+      --accent-gradient: linear-gradient(135deg, #00f2fe 0%, #7f00ff 100%);
+      --accent-glow: 0 0 20px rgba(0, 242, 254, 0.35);
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --radius-sm: 8px;
+      --radius-md: 14px;
+      --radius-lg: 20px;
+      --radius-full: 9999px;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --font-mono: "SF Mono", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      background: var(--bg-primary);
+      background-image: 
+        radial-gradient(at 0% 0%, rgba(127, 0, 255, 0.18) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, rgba(0, 242, 254, 0.15) 0px, transparent 50%);
+      background-attachment: fixed;
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.5;
+      min-height: 100vh;
+      overflow-x: hidden;
+      padding-bottom: 85px;
+    }
+
+    /* Glass utility */
+    .glass-panel {
+      background: var(--surface-glass);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-md);
+    }
+
+    /* Header */
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(8, 12, 20, 0.82);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border-glass);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brand-logo {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      background: var(--accent-gradient);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      box-shadow: var(--accent-glow);
+    }
+
+    .brand-title {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+      background: linear-gradient(135deg, #ffffff 40%, #00f2fe 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .user-pill {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 12px;
+      border-radius: var(--radius-full);
+      background: var(--surface-glass);
+      border: 1px solid var(--border-glass);
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .refresh-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 6px;
+      border-radius: var(--radius-sm);
+      transition: all 0.2s;
+    }
+
+    .refresh-btn:active {
+      transform: scale(0.9);
+      color: var(--accent-cyan);
+    }
+
+    .rotating {
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      100% { transform: rotate(360deg); }
+    }
+
+    /* Container */
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      padding: 16px;
+    }
+
+    /* Views */
+    .view {
+      display: none;
+      animation: fadeIn 0.25s ease-out;
+    }
+
+    .view.active {
+      display: block;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px 18px;
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: var(--radius-md);
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: all 0.2s;
+      outline: none;
+      text-decoration: none;
+    }
+
+    .btn:active {
+      transform: scale(0.97);
+    }
+
+    .btn-primary {
+      background: var(--accent-gradient);
+      color: #fff;
+      box-shadow: 0 4px 16px rgba(0, 242, 254, 0.25);
+    }
+
+    .btn-glass {
+      background: var(--surface-glass);
+      border-color: var(--border-glass);
+      color: var(--text-main);
+    }
+
+    .btn-glass:hover {
+      background: var(--surface-glass-hover);
+      border-color: var(--border-glass-bright);
+    }
+
+    .btn-danger {
+      background: rgba(239, 68, 68, 0.15);
+      border-color: rgba(239, 68, 68, 0.3);
+      color: #fca5a5;
+    }
+
+    .btn-sm {
+      padding: 6px 12px;
+      font-size: 12px;
+      border-radius: var(--radius-sm);
+    }
+
+    .btn-block {
+      width: 100%;
+    }
+
+    /* Active Address Card */
+    .address-card {
+      background: var(--surface-glass);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
+      margin-bottom: 12px;
+      position: relative;
+      overflow: hidden;
+      transition: border-color 0.2s;
+    }
+
+    .address-card:hover {
+      border-color: var(--border-glass-bright);
+    }
+
+    .address-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+
+    .address-badge {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 2px 8px;
+      border-radius: var(--radius-full);
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--success);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .address-text {
+      font-family: var(--font-mono);
+      font-size: 14px;
+      font-weight: 600;
+      color: #fff;
+      word-break: break-all;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .address-text:hover {
+      color: var(--accent-cyan);
+    }
+
+    .timer-bar-container {
+      margin: 10px 0;
+      background: rgba(255, 255, 255, 0.08);
+      height: 4px;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .timer-bar {
+      height: 100%;
+      background: var(--accent-gradient);
+      width: 100%;
+      transition: width 1s linear;
+    }
+
+    .timer-text {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+
+    .address-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    /* Inbox List */
+    .inbox-item {
+      background: var(--surface-glass);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
+      margin-bottom: 10px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .inbox-item:hover, .inbox-item:active {
+      background: var(--surface-glass-hover);
+      border-color: var(--border-glass-bright);
+      transform: translateY(-1px);
+    }
+
+    .inbox-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 4px;
+      gap: 8px;
+    }
+
+    .inbox-from {
+      font-weight: 600;
+      color: #fff;
+      font-size: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .inbox-time {
+      font-size: 11px;
+      color: var(--text-dim);
+      white-space: nowrap;
+    }
+
+    .inbox-subject {
+      font-size: 13px;
+      color: var(--text-main);
+      font-weight: 500;
+      margin-bottom: 6px;
+    }
+
+    .inbox-snippet {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.4;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .inbox-otp-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: rgba(0, 242, 254, 0.12);
+      border: 1px solid rgba(0, 242, 254, 0.3);
+      color: var(--accent-cyan);
+      padding: 2px 8px;
+      border-radius: var(--radius-sm);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 700;
+      margin-top: 8px;
+    }
+
+    /* Email Reader (Gmail style) */
+    .reader-toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border-glass);
+    }
+
+    .reader-header {
+      background: var(--surface-glass);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-md);
+      padding: 16px;
+      margin-bottom: 14px;
+    }
+
+    .reader-subject {
+      font-size: 18px;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 12px;
+      line-height: 1.3;
+    }
+
+    .reader-meta-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .reader-meta-row span strong {
+      color: var(--text-main);
+    }
+
+    /* Pinned OTP Card */
+    .otp-hero-card {
+      background: linear-gradient(135deg, rgba(0, 242, 254, 0.12) 0%, rgba(127, 0, 255, 0.18) 100%);
+      border: 1px solid rgba(0, 242, 254, 0.4);
+      box-shadow: 0 0 25px rgba(0, 242, 254, 0.15);
+      border-radius: var(--radius-md);
+      padding: 16px;
+      margin-bottom: 16px;
+      text-align: center;
+    }
+
+    .otp-hero-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--accent-cyan);
+      margin-bottom: 6px;
+    }
+
+    .otp-hero-code {
+      font-family: var(--font-mono);
+      font-size: 30px;
+      font-weight: 800;
+      letter-spacing: 4px;
+      color: #ffffff;
+      padding: 8px 16px;
+      border-radius: var(--radius-sm);
+      display: inline-block;
+      user-select: all;
+      margin-bottom: 12px;
+      text-shadow: 0 0 12px rgba(0, 242, 254, 0.5);
+    }
+
+    .reader-toggle-wrap {
+      display: flex;
+      background: rgba(255, 255, 255, 0.06);
+      padding: 3px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border-glass);
+      margin-bottom: 14px;
+    }
+
+    .reader-toggle-btn {
+      flex: 1;
+      padding: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      text-align: center;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      border-radius: 10px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .reader-toggle-btn.active {
+      background: var(--surface-glass-active);
+      color: #fff;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    }
+
+    /* Iframe Sheet container */
+    .email-sheet {
+      background: #ffffff;
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+      min-height: 400px;
+    }
+
+    .email-iframe {
+      width: 100%;
+      height: 500px;
+      border: none;
+      background: #ffffff;
+      display: block;
+    }
+
+    .clean-text-sheet {
+      background: var(--surface-glass);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-md);
+      padding: 16px;
+      color: #e2e8f0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    /* Bottom Navigation Dock */
+    .nav-dock {
+      position: fixed;
+      bottom: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: calc(100% - 24px);
+      max-width: 500px;
+      height: 62px;
+      background: rgba(15, 23, 42, 0.88);
+      backdrop-filter: blur(25px);
+      -webkit-backdrop-filter: blur(25px);
+      border: 1px solid var(--border-glass-bright);
+      border-radius: var(--radius-full);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+      display: flex;
+      align-items: center;
+      justify-content: space-around;
+      padding: 0 8px;
+      z-index: 100;
+    }
+
+    .nav-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      font-size: 10px;
+      font-weight: 600;
+      gap: 3px;
+      padding: 6px 12px;
+      border-radius: var(--radius-full);
+      cursor: pointer;
+      position: relative;
+      transition: all 0.2s;
+    }
+
+    .nav-item.active {
+      color: var(--accent-cyan);
+    }
+
+    .nav-item.active .nav-icon {
+      transform: scale(1.1);
+    }
+
+    .nav-icon {
+      font-size: 18px;
+      transition: transform 0.2s;
+    }
+
+    .nav-badge {
+      position: absolute;
+      top: 2px;
+      right: 6px;
+      background: var(--accent-gradient);
+      color: #fff;
+      font-size: 9px;
+      font-weight: 700;
+      padding: 1px 5px;
+      border-radius: 9px;
+      min-width: 14px;
+      text-align: center;
+    }
+
+    /* Modal */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      z-index: 200;
+      display: none;
+      align-items: flex-end;
+      justify-content: center;
+    }
+
+    .modal-overlay.active {
+      display: flex;
+    }
+
+    .modal-sheet {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-glass-bright);
+      border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+      width: 100%;
+      max-width: 550px;
+      max-height: 85vh;
+      overflow-y: auto;
+      padding: 20px 20px 30px;
+      animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    @keyframes slideUp {
+      from { transform: translateY(100%); }
+      to { transform: translateY(0); }
+    }
+
+    .modal-title {
+      font-size: 17px;
+      font-weight: 700;
+      margin-bottom: 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .modal-close {
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      font-size: 20px;
+      cursor: pointer;
+    }
+
+    .form-group {
+      margin-bottom: 14px;
+    }
+
+    .form-label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+
+    .form-input, .form-select {
+      width: 100%;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-md);
+      padding: 10px 14px;
+      color: #fff;
+      font-family: inherit;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .form-input:focus, .form-select:focus {
+      border-color: var(--accent-cyan);
+    }
+
+    .pill-group {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .pill-btn {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-glass);
+      color: var(--text-muted);
+      padding: 6px 12px;
+      border-radius: var(--radius-full);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .pill-btn.active {
+      background: var(--accent-gradient);
+      color: #fff;
+      border-color: transparent;
+    }
+
+    /* Toast */
+    #toast {
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%) translateY(-100px);
+      background: rgba(15, 23, 42, 0.95);
+      backdrop-filter: blur(15px);
+      -webkit-backdrop-filter: blur(15px);
+      border: 1px solid var(--accent-cyan);
+      box-shadow: 0 8px 25px rgba(0, 242, 254, 0.3);
+      color: #fff;
+      padding: 10px 20px;
+      border-radius: var(--radius-full);
+      font-size: 13px;
+      font-weight: 600;
+      z-index: 300;
+      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      pointer-events: none;
+    }
+
+    #toast.show {
+      transform: translateX(-50%) translateY(0);
+    }
+
+    /* Empty state */
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--text-dim);
+    }
+
+    .empty-icon {
+      font-size: 44px;
+      margin-bottom: 12px;
+      opacity: 0.8;
+    }
+
+    .empty-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-main);
+      margin-bottom: 6px;
+    }
+
+    .empty-desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      max-width: 280px;
+      margin: 0 auto 16px;
+    }
+  </style>
 </head>
 <body>
-  <div id="app">VexTempMail Mini App Initializing...</div>
+
+  <!-- Toast Notification -->
+  <div id="toast">
+    <span id="toast-icon">✨</span>
+    <span id="toast-msg">Tersalin ke clipboard!</span>
+  </div>
+
+  <!-- Header -->
+  <header>
+    <div class="brand">
+      <div class="brand-logo">⚡</div>
+      <div class="brand-title">VexTempMail</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <div class="user-pill" id="user-display">
+        <span id="user-name">Loading...</span>
+      </div>
+      <button class="refresh-btn" id="btn-refresh" title="Muat Ulang Data">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="23 4 23 10 17 10"></polyline>
+          <polyline points="1 20 1 14 7 14"></polyline>
+          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="container">
+
+    <!-- View: Kotak Masuk (Inbox) -->
+    <div id="view-inbox" class="view active">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+        <h2 style="font-size: 16px; font-weight: 700;">Kotak Masuk</h2>
+        <button class="btn btn-glass btn-sm" id="btn-clear-inbox">Hapus Semua</button>
+      </div>
+
+      <div id="inbox-filter-bar" style="margin-bottom: 12px; display: none;">
+        <select class="form-select" id="inbox-addr-filter">
+          <option value="">Semua Alamat</option>
+        </select>
+      </div>
+
+      <div id="inbox-list">
+        <!-- Rendered items -->
+      </div>
+    </div>
+
+    <!-- View: Alamat Saya -->
+    <div id="view-addresses" class="view">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+        <h2 style="font-size: 16px; font-weight: 700;">Alamat Saya</h2>
+        <button class="btn btn-primary btn-sm" id="btn-open-create">+ Buat Alamat</button>
+      </div>
+
+      <div id="address-list">
+        <!-- Rendered addresses -->
+      </div>
+    </div>
+
+    <!-- View: Detail Email (Gmail Style) -->
+    <div id="view-reader" class="view">
+      <div class="reader-toolbar">
+        <button class="btn btn-glass btn-sm" id="reader-back-btn">← Kembali</button>
+        <button class="btn btn-danger btn-sm" id="reader-delete-btn">🗑️ Hapus</button>
+      </div>
+
+      <div class="reader-header">
+        <h1 class="reader-subject" id="reader-subject">(Subjek)</h1>
+        <div class="reader-meta-row">
+          <span><strong>Dari:</strong> <span id="reader-from">...</span></span>
+          <span><strong>Untuk:</strong> <span id="reader-to">...</span></span>
+          <span><strong>Waktu:</strong> <span id="reader-date">...</span></span>
+        </div>
+      </div>
+
+      <!-- Pinned OTP Banner if detected -->
+      <div id="reader-otp-card" class="otp-hero-card" style="display: none;">
+        <div class="otp-hero-title">🔐 KODE OTP / VERIFIKASI</div>
+        <div class="otp-hero-code" id="reader-otp-code">------</div>
+        <div style="display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
+          <button class="btn btn-primary btn-sm" id="btn-copy-reader-otp">📋 Salin Kode</button>
+          <a class="btn btn-glass btn-sm" id="btn-open-verify-link" href="#" target="_blank" style="display: none;">🌐 Buka Tautan Verifikasi</a>
+        </div>
+      </div>
+
+      <!-- Mode Toggle: Format Asli vs Teks Bersih -->
+      <div class="reader-toggle-wrap">
+        <button class="reader-toggle-btn active" id="toggle-view-html">📧 Format Asli (HTML)</button>
+        <button class="reader-toggle-btn" id="toggle-view-text">📝 Teks Bersih</button>
+      </div>
+
+      <!-- HTML Sheet (Gmail iframe) -->
+      <div id="reader-html-container" class="email-sheet">
+        <iframe id="reader-iframe" class="email-iframe" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>
+      </div>
+
+      <!-- Clean Text Sheet -->
+      <div id="reader-text-container" class="clean-text-sheet" style="display: none;">
+        <div id="reader-clean-text">...</div>
+      </div>
+    </div>
+
+    <!-- View: Donasi -->
+    <div id="view-donate" class="view">
+      <div style="text-align: center; margin-bottom: 20px;">
+        <h2 style="font-size: 18px; font-weight: 700; margin-bottom: 6px;">Dukung Server Bot</h2>
+        <p style="font-size: 13px; color: var(--text-muted);">Donasi sukarela untuk biaya perpanjangan domain & Cloudflare Worker.</p>
+      </div>
+
+      <div class="glass-panel" style="padding: 24px; text-align: center; max-width: 380px; margin: 0 auto;">
+        <div id="qris-img-container" style="background: #fff; padding: 12px; border-radius: var(--radius-md); display: inline-block; margin-bottom: 16px;">
+          <img id="qris-img" src="/api/qris" alt="QRIS Donasi" style="max-width: 260px; width: 100%; height: auto; border-radius: 4px; display: block;" onerror="handleQrisError()">
+        </div>
+        <p style="font-size: 12px; color: var(--text-muted); line-height: 1.5;">
+          Scan QRIS di atas dengan GoPay, OVO, Dana, ShopeePay, BCA, atau mobile banking lainnya. Terima kasih banyak atas dukungannya! 🙏
+        </p>
+      </div>
+    </div>
+
+    <!-- View: Admin Panel (if admin) -->
+    <div id="view-admin" class="view">
+      <h2 style="font-size: 18px; font-weight: 700; margin-bottom: 16px;">Panel Admin</h2>
+
+      <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px;">
+        <div class="glass-panel" style="padding: 12px; text-align: center;">
+          <div style="font-size: 11px; color: var(--text-dim); margin-bottom: 4px;">PENGGUNA</div>
+          <div id="admin-stat-users" style="font-size: 20px; font-weight: 800; color: var(--accent-cyan);">0</div>
+        </div>
+        <div class="glass-panel" style="padding: 12px; text-align: center;">
+          <div style="font-size: 11px; color: var(--text-dim); margin-bottom: 4px;">ALAMAT</div>
+          <div id="admin-stat-addresses" style="font-size: 20px; font-weight: 800; color: #a855f7;">0</div>
+        </div>
+        <div class="glass-panel" style="padding: 12px; text-align: center;">
+          <div style="font-size: 11px; color: var(--text-dim); margin-bottom: 4px;">EMAIL MASUK</div>
+          <div id="admin-stat-emails" style="font-size: 20px; font-weight: 800; color: var(--success);">0</div>
+        </div>
+      </div>
+
+      <div class="glass-panel" style="padding: 16px;">
+        <h3 style="font-size: 14px; font-weight: 600; margin-bottom: 12px;">Kelola Domain Tambahan</h3>
+        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+          <input type="text" class="form-input" id="admin-new-domain" placeholder="contoh: mail.domainku.com">
+          <button class="btn btn-primary btn-sm" id="admin-add-domain-btn">+ Tambah</button>
+        </div>
+        <div id="admin-domains-list">
+          <!-- Domain list -->
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Modal: Buat Alamat Baru -->
+  <div class="modal-overlay" id="modal-create">
+    <div class="modal-sheet">
+      <div class="modal-title">
+        <span>Buat Alamat Baru</span>
+        <button class="modal-close" id="modal-close-btn">&times;</button>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Mode Pembuatan</label>
+        <div class="pill-group">
+          <button class="pill-btn active" id="mode-auto-btn">🎲 Acak Cepat</button>
+          <button class="pill-btn" id="mode-custom-btn">✏️ Kustom Alias</button>
+        </div>
+      </div>
+
+      <div class="form-group" id="custom-alias-wrap" style="display: none;">
+        <label class="form-label">Nama Alias</label>
+        <input type="text" class="form-input" id="custom-alias-input" placeholder="contoh: hafiz.project">
+        <span style="font-size: 11px; color: var(--text-dim); margin-top: 4px; display: block;">3-20 karakter alfanumerik.</span>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Pilih Domain</label>
+        <select class="form-select" id="create-domain-select">
+          <!-- Populated dynamically -->
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Masa Aktif</label>
+        <div class="pill-group" id="duration-pills">
+          <button class="pill-btn" data-hours="6">6 Jam</button>
+          <button class="pill-btn" data-hours="12">12 Jam</button>
+          <button class="pill-btn active" data-hours="24">24 Jam</button>
+          <button class="pill-btn" data-hours="48">48 Jam</button>
+          <button class="pill-btn" data-hours="72">72 Jam</button>
+        </div>
+      </div>
+
+      <button class="btn btn-primary btn-block" id="btn-submit-create" style="margin-top: 18px;">
+        🚀 Buat Alamat Sekarang
+      </button>
+    </div>
+  </div>
+
+  <!-- Bottom Navigation Dock -->
+  <nav class="nav-dock">
+    <button class="nav-item active" data-view="inbox">
+      <span class="nav-icon">📬</span>
+      <span>Kotak Masuk</span>
+      <span class="nav-badge" id="badge-inbox" style="display: none;">0</span>
+    </button>
+    <button class="nav-item" data-view="addresses">
+      <span class="nav-icon">📮</span>
+      <span>Alamat</span>
+      <span class="nav-badge" id="badge-addresses" style="display: none;">0</span>
+    </button>
+    <button class="nav-item" id="nav-btn-create">
+      <span class="nav-icon">➕</span>
+      <span>Buat</span>
+    </button>
+    <button class="nav-item" data-view="donate">
+      <span class="nav-icon">☕</span>
+      <span>Donasi</span>
+    </button>
+    <button class="nav-item" data-view="admin" id="nav-item-admin" style="display: none;">
+      <span class="nav-icon">⚙️</span>
+      <span>Admin</span>
+    </button>
+  </nav>
+
+  <script>
+    // --- Application State ---
+    const tg = window.Telegram?.WebApp;
+    if (tg) {
+      tg.ready();
+      tg.expand();
+      try {
+        tg.setHeaderColor('#080c14');
+        tg.setBackgroundColor('#080c14');
+      } catch (e) {}
+    }
+
+    const state = {
+      user: null,
+      isAdmin: false,
+      addresses: [],
+      domains: [],
+      inbox: [],
+      stats: null,
+      currentView: 'inbox',
+      currentEmail: null,
+      createMode: 'auto',
+      selectedDuration: 24,
+      filterAddress: '',
+    };
+
+    function haptic(type = 'light') {
+      if (tg?.HapticFeedback) {
+        if (type === 'success' || type === 'error' || type === 'warning') {
+          tg.HapticFeedback.notificationOccurred(type);
+        } else {
+          tg.HapticFeedback.impactOccurred(type);
+        }
+      }
+    }
+
+    function showToast(msg, icon = '✨') {
+      const toast = document.getElementById('toast');
+      document.getElementById('toast-msg').textContent = msg;
+      document.getElementById('toast-icon').textContent = icon;
+      toast.classList.add('show');
+      haptic('light');
+      setTimeout(() => toast.classList.remove('show'), 2400);
+    }
+
+    async function copyToClipboard(text, label = 'Teks') {
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast(\`\${label} disalin!\`, '📋');
+        haptic('success');
+      } catch (err) {
+        const inp = document.createElement('input');
+        inp.value = text;
+        document.body.appendChild(inp);
+        inp.select();
+        document.execCommand('copy');
+        document.body.removeChild(inp);
+        showToast(\`\${label} disalin!\`, '📋');
+        haptic('success');
+      }
+    }
+
+    function getAuthHeaders() {
+      const initData = tg?.initData || '';
+      return {
+        'Content-Type': 'application/json',
+        'X-Telegram-Init-Data': initData,
+      };
+    }
+
+    // --- API Calls ---
+    async function apiFetch(endpoint, options = {}) {
+      const headers = { ...getAuthHeaders(), ...(options.headers || {}) };
+      const res = await fetch('/api' + endpoint, { ...options, headers });
+      return res.json();
+    }
+
+    async function loadBootstrapData() {
+      const btnRefresh = document.getElementById('btn-refresh');
+      btnRefresh.classList.add('rotating');
+      try {
+        const data = await apiFetch('/bootstrap');
+        if (!data.ok) throw new Error(data.error);
+
+        state.user = data.user;
+        state.isAdmin = data.isAdmin;
+        state.addresses = data.addresses || [];
+        state.domains = data.domains || [];
+        state.inbox = data.inbox || [];
+        state.stats = data.stats;
+
+        // UI Updates
+        document.getElementById('user-name').textContent = state.user?.first_name || 'Pengguna';
+        if (state.isAdmin) {
+          document.getElementById('nav-item-admin').style.display = 'flex';
+          renderAdminStats();
+        }
+
+        renderAddresses();
+        renderInbox();
+        populateDomainSelects();
+      } catch (err) {
+        showToast('Gagal memuat data: ' + err.message, '⚠️');
+      } finally {
+        setTimeout(() => btnRefresh.classList.remove('rotating'), 400);
+      }
+    }
+
+    // --- View Navigation ---
+    function switchView(viewName) {
+      haptic('light');
+      state.currentView = viewName;
+      document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+      const activeEl = document.getElementById(\`view-\${viewName}\`);
+      if (activeEl) activeEl.classList.add('active');
+
+      document.querySelectorAll('.nav-item').forEach(n => {
+        n.classList.toggle('active', n.dataset.view === viewName);
+      });
+
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    document.querySelectorAll('.nav-item[data-view]').forEach(item => {
+      item.addEventListener('click', () => switchView(item.dataset.view));
+    });
+
+    document.getElementById('btn-refresh').addEventListener('click', loadBootstrapData);
+
+    // --- Addresses Rendering ---
+    function renderAddresses() {
+      const container = document.getElementById('address-list');
+      const badge = document.getElementById('badge-addresses');
+
+      badge.textContent = state.addresses.length;
+      badge.style.display = state.addresses.length > 0 ? 'inline-block' : 'none';
+
+      if (state.addresses.length === 0) {
+        container.innerHTML = \`
+          <div class="empty-state">
+            <div class="empty-icon">📮</div>
+            <div class="empty-title">Belum Ada Alamat Aktif</div>
+            <div class="empty-desc">Buat alamat email sementara Anda untuk menerima email dan kode verifikasi.</div>
+            <button class="btn btn-primary btn-sm" onclick="openCreateModal()">+ Buat Alamat Sekarang</button>
+          </div>
+        \`;
+        return;
+      }
+
+      const now = Date.now();
+      container.innerHTML = state.addresses.map(addr => {
+        const remainingMs = Math.max(0, addr.expiresAt - now);
+        const totalDurationMs = (addr.ttlSeconds || 86400) * 1000;
+        const percent = Math.min(100, Math.max(0, (remainingMs / totalDurationMs) * 100));
+
+        const hoursLeft = Math.floor(remainingMs / (1000 * 60 * 60));
+        const minsLeft = Math.floor((remainingMs % (1000 * 60 * 60)) / (1000 * 60));
+        const timeLabel = remainingMs > 0 ? \`\${hoursLeft}j \${minsLeft}m tersisa\` : 'Kadaluarsa';
+
+        return \`
+          <div class="address-card">
+            <div class="address-header">
+              <span class="address-badge">\${remainingMs > 0 ? 'Aktif' : 'Expired'}</span>
+              <span class="timer-text">\${timeLabel}</span>
+            </div>
+            <div class="address-text" onclick="copyToClipboard('\${addr.address}', 'Alamat')">
+              <span>\${addr.address}</span>
+              <span style="font-size: 13px; opacity: 0.6;">📋</span>
+            </div>
+            <div class="timer-bar-container">
+              <div class="timer-bar" style="width: \${percent}%;"></div>
+            </div>
+            <div class="address-actions">
+              <button class="btn btn-glass btn-sm" onclick="copyToClipboard('\${addr.address}', 'Alamat')">📋 Salin</button>
+              <button class="btn btn-glass btn-sm" onclick="extendAddress('\${addr.address}')">⏳ +24 Jam</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteAddress('\${addr.address}')">🗑️ Hapus</button>
+            </div>
+          </div>
+        \`;
+      }).join('');
+    }
+
+    async function extendAddress(address) {
+      haptic('light');
+      try {
+        const res = await apiFetch('/addresses/extend', {
+          method: 'POST',
+          body: JSON.stringify({ address }),
+        });
+        if (!res.ok) throw new Error(res.error);
+        state.addresses = res.addresses;
+        renderAddresses();
+        showToast('Masa aktif berhasil diperpanjang +24 Jam!', '⏳');
+      } catch (err) {
+        showToast('Gagal perpanjang: ' + err.message, '⚠️');
+      }
+    }
+
+    async function deleteAddress(address) {
+      if (!confirm(\`Hapus alamat \${address}?\`)) return;
+      haptic('warning');
+      try {
+        const res = await apiFetch('/addresses', {
+          method: 'DELETE',
+          body: JSON.stringify({ address }),
+        });
+        if (!res.ok) throw new Error(res.error);
+        state.addresses = res.addresses;
+        renderAddresses();
+        showToast('Alamat berhasil dihapus.', '🗑️');
+      } catch (err) {
+        showToast('Gagal menghapus: ' + err.message, '⚠️');
+      }
+    }
+
+    // --- Modal Create Address ---
+    function openCreateModal() {
+      haptic('light');
+      document.getElementById('modal-create').classList.add('active');
+    }
+
+    function closeCreateModal() {
+      document.getElementById('modal-create').classList.remove('active');
+    }
+
+    document.getElementById('btn-open-create').addEventListener('click', openCreateModal);
+    document.getElementById('nav-btn-create').addEventListener('click', openCreateModal);
+    document.getElementById('modal-close-btn').addEventListener('click', closeCreateModal);
+
+    document.getElementById('mode-auto-btn').addEventListener('click', () => {
+      state.createMode = 'auto';
+      document.getElementById('mode-auto-btn').classList.add('active');
+      document.getElementById('mode-custom-btn').classList.remove('active');
+      document.getElementById('custom-alias-wrap').style.display = 'none';
+    });
+
+    document.getElementById('mode-custom-btn').addEventListener('click', () => {
+      state.createMode = 'custom';
+      document.getElementById('mode-custom-btn').classList.add('active');
+      document.getElementById('mode-auto-btn').classList.remove('active');
+      document.getElementById('custom-alias-wrap').style.display = 'block';
+    });
+
+    document.querySelectorAll('#duration-pills .pill-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('#duration-pills .pill-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        state.selectedDuration = parseInt(btn.dataset.hours, 10);
+      });
+    });
+
+    function populateDomainSelects() {
+      const select = document.getElementById('create-domain-select');
+      select.innerHTML = state.domains.map(d => \`<option value="\${d}">\${d}</option>\`).join('');
+    }
+
+    document.getElementById('btn-submit-create').addEventListener('click', async () => {
+      const domain = document.getElementById('create-domain-select').value;
+      const customName = document.getElementById('custom-alias-input').value.trim();
+
+      const btn = document.getElementById('btn-submit-create');
+      btn.textContent = 'Membuat Alamat...';
+      btn.disabled = true;
+
+      try {
+        const res = await apiFetch('/addresses', {
+          method: 'POST',
+          body: JSON.stringify({
+            mode: state.createMode,
+            customName: state.createMode === 'custom' ? customName : null,
+            domain,
+            durationHours: state.selectedDuration,
+          }),
+        });
+        if (!res.ok) throw new Error(res.error);
+
+        state.addresses = res.addresses;
+        renderAddresses();
+        closeCreateModal();
+        switchView('addresses');
+        showToast('Alamat baru siap digunakan!', '🚀');
+        haptic('success');
+      } catch (err) {
+        showToast(err.message, '⚠️');
+      } finally {
+        btn.textContent = '🚀 Buat Alamat Sekarang';
+        btn.disabled = false;
+      }
+    });
+
+    // --- Inbox & Reader (Gmail-Style) ---
+    function renderInbox() {
+      const container = document.getElementById('inbox-list');
+      const badge = document.getElementById('badge-inbox');
+      badge.textContent = state.inbox.length;
+      badge.style.display = state.inbox.length > 0 ? 'inline-block' : 'none';
+
+      if (state.inbox.length === 0) {
+        container.innerHTML = \`
+          <div class="empty-state">
+            <div class="empty-icon">📭</div>
+            <div class="empty-title">Kotak Masuk Kosong</div>
+            <div class="empty-desc">Belum ada email yang masuk. Gunakan alamat email aktif Anda untuk menerima pesan.</div>
+          </div>
+        \`;
+        return;
+      }
+
+      container.innerHTML = state.inbox.map(item => {
+        const timeStr = item.receivedAt ? formatRelativeTime(item.receivedAt) : 'Baru saja';
+        return \`
+          <div class="inbox-item" onclick="openEmailReader('\${item.id}')">
+            <div class="inbox-top">
+              <span class="inbox-from">\${escapeHtml(item.from || '(Pengirim tidak dikenal)')}</span>
+              <span class="inbox-time">\${timeStr}</span>
+            </div>
+            <div class="inbox-subject">\${escapeHtml(item.subject || '(Tanpa Subjek)')}</div>
+            <div class="inbox-snippet">\${escapeHtml(item.snippet || '')}</div>
+            \${item.primaryOtp ? \`<div class="inbox-otp-tag">🔑 OTP: \${escapeHtml(item.primaryOtp)}</div>\` : ''}
+          </div>
+        \`;
+      }).join('');
+    }
+
+    function openEmailReader(id) {
+      const email = state.inbox.find(i => i.id === id);
+      if (!email) return;
+
+      state.currentEmail = email;
+      haptic('light');
+
+      document.getElementById('reader-subject').textContent = email.subject || '(Tanpa Subjek)';
+      document.getElementById('reader-from').textContent = email.from || '(tidak diketahui)';
+      document.getElementById('reader-to').textContent = email.address || '';
+      document.getElementById('reader-date').textContent = email.receivedAt ? new Date(email.receivedAt).toLocaleString('id-ID') : '-';
+
+      // OTP Card
+      const otpCard = document.getElementById('reader-otp-card');
+      if (email.primaryOtp) {
+        otpCard.style.display = 'block';
+        document.getElementById('reader-otp-code').textContent = email.primaryOtp;
+
+        const verifyBtn = document.getElementById('btn-open-verify-link');
+        if (email.verificationLink) {
+          verifyBtn.href = email.verificationLink;
+          verifyBtn.style.display = 'inline-flex';
+        } else {
+          verifyBtn.style.display = 'none';
+        }
+      } else {
+        otpCard.style.display = 'none';
+      }
+
+      // Render into Sandboxed Iframe (Gmail style)
+      const iframe = document.getElementById('reader-iframe');
+      const htmlContent = email.rawHtml || (email.cleanText ? \`<pre style="font-family: inherit; white-space: pre-wrap; word-break: break-word; padding: 15px; color: #1e293b;">\${escapeHtml(email.cleanText)}</pre>\` : '<p style="padding: 20px; color: #64748b;">(Pesan kosong)</p>');
+
+      // Inject HTML safely into iframe srcdoc with responsive mobile styling
+      const iframeDocument = \`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <base target="_blank">
+          <style>
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+              color: #1e293b;
+              margin: 12px;
+              line-height: 1.5;
+              word-break: break-word;
+            }
+            img { max-width: 100% !important; height: auto !important; }
+            table { max-width: 100% !important; }
+            a { color: #0284c7; }
+          </style>
+        </head>
+        <body>\${htmlContent}</body>
+        </html>
+      \`;
+      iframe.srcdoc = iframeDocument;
+
+      // Clean text sheet fallback
+      document.getElementById('reader-clean-text').textContent = email.cleanText || '(tidak ada isi pesan teks)';
+
+      // Reset toggle to HTML view
+      setReaderViewMode('html');
+      switchView('reader');
+    }
+
+    function setReaderViewMode(mode) {
+      const btnHtml = document.getElementById('toggle-view-html');
+      const btnText = document.getElementById('toggle-view-text');
+      const containerHtml = document.getElementById('reader-html-container');
+      const containerText = document.getElementById('reader-text-container');
+
+      if (mode === 'html') {
+        btnHtml.classList.add('active');
+        btnText.classList.remove('active');
+        containerHtml.style.display = 'block';
+        containerText.style.display = 'none';
+      } else {
+        btnText.classList.add('active');
+        btnHtml.classList.remove('active');
+        containerHtml.style.display = 'none';
+        containerText.style.display = 'block';
+      }
+    }
+
+    document.getElementById('toggle-view-html').addEventListener('click', () => setReaderViewMode('html'));
+    document.getElementById('toggle-view-text').addEventListener('click', () => setReaderViewMode('text'));
+
+    document.getElementById('reader-back-btn').addEventListener('click', () => switchView('inbox'));
+
+    document.getElementById('btn-copy-reader-otp').addEventListener('click', () => {
+      if (state.currentEmail?.primaryOtp) {
+        copyToClipboard(state.currentEmail.primaryOtp, 'Kode OTP');
+      }
+    });
+
+    document.getElementById('reader-delete-btn').addEventListener('click', async () => {
+      if (!state.currentEmail) return;
+      haptic('warning');
+      try {
+        const res = await apiFetch('/inbox', {
+          method: 'DELETE',
+          body: JSON.stringify({ id: state.currentEmail.id }),
+        });
+        if (!res.ok) throw new Error(res.error);
+        state.inbox = res.inbox;
+        renderInbox();
+        switchView('inbox');
+        showToast('Email dihapus dari riwayat.', '🗑️');
+      } catch (err) {
+        showToast('Gagal menghapus: ' + err.message, '⚠️');
+      }
+    });
+
+    document.getElementById('btn-clear-inbox').addEventListener('click', async () => {
+      if (!confirm('Hapus seluruh riwayat kotak masuk?')) return;
+      haptic('warning');
+      try {
+        const res = await apiFetch('/inbox', {
+          method: 'DELETE',
+          body: JSON.stringify({ clearAll: true }),
+        });
+        if (!res.ok) throw new Error(res.error);
+        state.inbox = [];
+        renderInbox();
+        showToast('Kotak masuk dikosongkan.', '🗑️');
+      } catch (err) {
+        showToast('Gagal mengosongkan: ' + err.message, '⚠️');
+      }
+    });
+
+    // --- Admin Functions ---
+    function renderAdminStats() {
+      if (!state.stats) return;
+      document.getElementById('admin-stat-users').textContent = state.stats.totalUsers || 0;
+      document.getElementById('admin-stat-addresses').textContent = state.stats.totalAddressesCreated || 0;
+      document.getElementById('admin-stat-emails').textContent = state.stats.totalEmailsForwarded || 0;
+      loadAdminDomains();
+    }
+
+    async function loadAdminDomains() {
+      try {
+        const data = await apiFetch('/admin/domains');
+        if (!data.ok) return;
+        const list = document.getElementById('admin-domains-list');
+        list.innerHTML = data.allDomains.map(d => {
+          const isExtra = data.extraDomains.includes(d);
+          return \`
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: rgba(255,255,255,0.04); border-radius: var(--radius-sm); margin-bottom: 6px;">
+              <span style="font-family: var(--font-mono); font-size: 13px;">\${d}</span>
+              \${isExtra ? \`<button class="btn btn-danger btn-sm" onclick="removeDomain('\${d}')">Hapus</button>\` : \`<span style="font-size: 11px; color: var(--text-dim);">Bawaan</span>\`}
+            </div>
+          \`;
+        }).join('');
+      } catch (e) {}
+    }
+
+    async function removeDomain(domain) {
+      if (!confirm(\`Hapus domain \${domain}?\`)) return;
+      try {
+        const res = await apiFetch('/admin/domains', {
+          method: 'DELETE',
+          body: JSON.stringify({ domain }),
+        });
+        if (res.ok) {
+          showToast('Domain dihapus.', '🗑️');
+          loadAdminDomains();
+        }
+      } catch (e) {}
+    }
+
+    document.getElementById('admin-add-domain-btn')?.addEventListener('click', async () => {
+      const input = document.getElementById('admin-new-domain');
+      const domain = input.value.trim();
+      if (!domain) return;
+      try {
+        const res = await apiFetch('/admin/domains', {
+          method: 'POST',
+          body: JSON.stringify({ domain }),
+        });
+        if (res.ok) {
+          input.value = '';
+          showToast('Domain ditambahkan!', '✅');
+          loadAdminDomains();
+        } else {
+          showToast(res.error || 'Gagal tambah domain', '⚠️');
+        }
+      } catch (e) {}
+    });
+
+    function handleQrisError() {
+      const container = document.getElementById('qris-img-container');
+      container.innerHTML = \`
+        <div style="padding: 30px 10px; color: #64748b;">
+          <div style="font-size: 32px; margin-bottom: 8px;">🖼️</div>
+          <div style="font-size: 13px; font-weight: 600;">QRIS Belum Diunggah</div>
+          <div style="font-size: 11px; margin-top: 4px;">Admin dapat mengunggahnya dengan kirim /setqris di chat bot.</div>
+        </div>
+      \`;
+    }
+
+    // --- Helpers ---
+    function formatRelativeTime(timestamp) {
+      const diffMs = Date.now() - timestamp;
+      const diffSec = Math.floor(diffMs / 1000);
+      if (diffSec < 60) return 'Baru saja';
+      const diffMin = Math.floor(diffSec / 60);
+      if (diffMin < 60) return \`\${diffMin}m lalu\`;
+      const diffHour = Math.floor(diffMin / 60);
+      if (diffHour < 24) return \`\${diffHour}j lalu\`;
+      const diffDay = Math.floor(diffHour / 24);
+      return \`\${diffDay}h lalu\`;
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    // Initial Load
+    loadBootstrapData();
+  </script>
 </body>
-</html>`;
+</html>
+`;
 }
 
 
