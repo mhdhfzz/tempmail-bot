@@ -12,16 +12,20 @@ Berjalan di atas **Cloudflare Workers** (serverless) dan **Cloudflare KV**. Sang
 
 ## Fitur Utama
 
-- **Fokus Kode OTP & Verifikasi**: Otomatis mendeteksi kode OTP (4–8 digit angka, format strip `123-456`, dsb) dan menyajikannya paling atas.
+- **📱 Telegram Mini App (Web App)**: Antarmuka aplikasi web modern bertema **Dark Glassmorphism Adaptif** dengan kartu *frosted glass*, aksen neon cyan/violet, dan umpan balik getaran (*haptic feedback*).
+- **📧 Tampilan Email Asli ala Gmail**: Baca email langsung dalam format aslinya (HTML, tata letak, gambar responsif, tabel, dan tautan) di dalam *sandboxed viewer* seperti aplikasi Gmail, lengkap dengan tombol peralihan instan ke Teks Bersih.
+- **🔐 Pinned Quick-Copy Card OTP**: Kotak masuk dan pembaca email menampilkan kartu neon kode OTP di posisi paling atas dengan tombol salin 1 ketukan dan tombol langsung ke tautan verifikasi.
+- **⏳ Progress Bar & Countdown Timer**: Pantau sisa waktu masa aktif setiap alamat email secara *real-time* dengan visual progress bar dinamis serta tombol perpanjang instan (`+24 Jam`).
+- **Fokus Kode OTP & Verifikasi**: Otomatis mendeteksi kode OTP (4–8 digit angka, format strip `123-456`, dsb) dan menyajikannya paling atas di chat Telegram maupun di Mini App.
 - **Salin Kode 1 Kali Ketuk (1-Tap Copy)**: Kode OTP diformat `<code>OTP</code>` sehingga cukup diketuk 1 kali di HP/PC untuk langsung menyalinnya, ditambah tombol instan `[ 📋 Salin: OTP ]` di keyboard (`copy_text`).
 - **Deteksi Tautan Verifikasi Otomatis**: Otomatis mendeteksi tautan konfirmasi pendaftaran/aktivasi akun (`verify`, `confirm`, `token=`) dan menyediakan tombol sekali klik `[ 🔗 Buka Tautan Verifikasi ]`.
-- **Pembersihan Total Tag HTML**: Seluruh tag HTML yang mengganggu, header MIME mentah, dan artefak quoted-printable dibersihkan 100% menjadi teks yang rapi dan mudah dibaca.
+- **Pembersihan Total Tag HTML di Chat**: Seluruh tag HTML yang mengganggu, header MIME mentah, dan artefak quoted-printable dibersihkan 100% menjadi teks yang rapi dan mudah dibaca di chat Telegram.
 - **Alamat Kustom & Acak Natural**: Buat alamat dengan nama pilihan sendiri atau otomatis dibuatkan nama natural yang mudah dibaca (kombinasi kata & angka pendek).
 - **Masa Aktif Fleksibel**: Pilihan durasi masa aktif alamat (6, 12, 24, 48, hingga 72 jam).
 - **Multi-Domain**: Mendukung lebih dari satu domain email sekaligus.
 - **Lampiran Lengkap**: PDF, dokumen Office, arsip ZIP, dan file lampiran lainnya otomatis diteruskan sebagai dokumen Telegram.
 - **Riwayat & Navigasi Interaktif**: Antarmuka responsif berbasis tombol (*inline keyboard*) dengan paginasi riwayat email tanpa batas pemotongan teks.
-- **Panel & Notifikasi Admin**: Notifikasi penggunaan real-time, ringkasan statistik bot (`/stats`), ubah QRIS donasi via chat (`/setqris`), serta manajemen domain (`/adddomain`, `/removedomain`).
+- **Panel & Notifikasi Admin**: Notifikasi penggunaan real-time, ringkasan statistik bot (`/stats`), ubah QRIS donasi via chat (`/setqris`), setup tombol Mini App (`/setupapp`), serta manajemen domain (`/adddomain`, `/removedomain`).
 
 ---
 
@@ -113,6 +117,7 @@ Masih di tab **Settings** → **Variables and Secrets**, klik **Add** pada **Env
 | `TELEGRAM_BOT_TOKEN` | **Secret / Encrypted** | Token bot yang Anda peroleh dari @BotFather. |
 | `TEMPMAIL_DOMAIN` | **Text / Plaintext** | Domain email Anda (contoh: `domain.com` atau `mail1.com,mail2.com`). |
 | `ADMIN_CHAT_ID` | **Text / Plaintext** *(opsional)* | ID Telegram Anda (cek via [@userinfobot](https://t.me/userinfobot)) untuk menerima laporan admin. |
+| `WORKER_URL` | **Text / Plaintext** *(opsional)* | URL Worker Anda (misal `https://tempmail-bot.username.workers.dev`). Otomatis terdeteksi jika tidak diisi. |
 | `WEBHOOK_SECRET` | **Secret / Encrypted** *(opsional)* | String acak bebas untuk memvalidasi keamanan request Telegram. |
 
 Klik **Save and Deploy** untuk menerapkan perubahan.
@@ -135,7 +140,10 @@ Agar setiap email yang dikirim ke domain Anda diteruskan ke Worker bot:
    *(Jika Anda tidak mengisi `WEBHOOK_SECRET`, hapus bagian `&secret_token=...`)*.
 3. Jika browser menampilkan respon `{"ok":true,"result":true,"description":"Webhook was set"}`, bot Anda sudah aktif!
 
-### 5. Atur Menu Perintah di BotFather (Opsional)
+### 5. Aktifkan Tombol Menu Mini App (Satu Klik)
+Setelah bot aktif, kirim perintah `/setupapp` di chat bot Telegram dari akun admin Anda (`ADMIN_CHAT_ID`). Bot akan otomatis mendaftarkan tombol Menu Mini App resmi di pojok kiri bawah chat Telegram pengguna.
+
+### 6. Atur Menu Perintah di BotFather (Opsional)
 Agar daftar perintah otomatis muncul di Telegram:
 1. Chat [@BotFather](https://t.me/BotFather), kirim `/setcommands`, lalu pilih bot Anda.
 2. Tempel daftar berikut:
@@ -165,6 +173,7 @@ Agar daftar perintah otomatis muncul di Telegram:
 ### Khusus Admin (Sesuai `ADMIN_CHAT_ID`)
 - **Notifikasi Real-Time**: Menerima pesan instan saat ada pengguna baru, pembuatan/penghapusan alamat, dan email masuk.
 - `/stats` — Ringkasan metrik bot dalam tabel (total user, alamat aktif, email diteruskan).
+- `/setupapp` — Daftarkan dan aktifkan tombol Menu Mini App Telegram secara otomatis.
 - `/setqris` — Perbarui gambar QRIS donasi langsung via chat (cukup kirim foto setelah menjalankan perintah).
 - `/domains` — Lihat daftar semua domain yang terhubung.
 - `/adddomain <domain>` — Tambahkan domain baru tanpa perlu deploy ulang.
