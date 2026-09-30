@@ -140,8 +140,40 @@ Agar setiap email yang dikirim ke domain Anda diteruskan ke Worker bot:
    *(Jika Anda tidak mengisi `WEBHOOK_SECRET`, hapus bagian `&secret_token=...`)*.
 3. Jika browser menampilkan respon `{"ok":true,"result":true,"description":"Webhook was set"}`, bot Anda sudah aktif!
 
-### 5. Aktifkan Tombol Menu Mini App (Satu Klik)
-Setelah bot aktif, kirim perintah `/setupapp` di chat bot Telegram dari akun admin Anda (`ADMIN_CHAT_ID`). Bot akan otomatis mendaftarkan tombol Menu Mini App resmi di pojok kiri bawah chat Telegram pengguna.
+### 5. Pengaturan Mini App di Telegram (BotFather & Satu Klik)
+
+Terdapat 3 cara praktis untuk mengaktifkan Mini App di bot Anda:
+
+#### Cara 1: Mengatur Tombol Menu Mini App via BotFather (Paling Direkomendasikan)
+Tombol ini akan muncul di pojok kiri bawah kolom obrolan chat bot pengguna:
+1. Buka [@BotFather](https://t.me/BotFather) di Telegram.
+2. Kirim perintah `/setmenubutton` dan pilih bot Anda (misal `@VexTempMail_bot`).
+3. BotFather akan meminta URL Web App, kirimkan URL Worker Anda:
+   ```
+   https://<URL_WORKER_KAMU>
+   ```
+   *(Contoh: `https://tempmail-bot.username.workers.dev`)*.
+4. Masukkan teks untuk tombol tersebut (misal: `Buka Aplikasi` atau `Mini App`).
+5. Selesai! Pengguna sekarang dapat membuka Mini App langsung dari tombol di samping kolom ketik chat.
+
+#### Cara 2: Membuat Mini App Resmi & Direct Link (`t.me/bot/app`) via BotFather
+Memungkinkan Anda memiliki tautan langsung (seperti `t.me/VexTempMail_bot/app`) yang dapat dibagikan ke mana saja:
+1. Buka [@BotFather](https://t.me/BotFather), kirim perintah `/newapp`.
+2. Pilih bot Anda.
+3. Masukkan **Title** (Judul aplikasi): `VexTempMail`
+4. Masukkan **Description** (Deskripsi): `Aplikasi Email Sementara Cepat & Otomatis Tangkap OTP`
+5. Upload foto cover/ikon (format PNG/JPG ukuran 640x360 piksel).
+6. Jika diminta animasi GIF demo, kirim `/empty` jika belum ada.
+7. Masukkan URL Worker Anda: `https://<URL_WORKER_KAMU>`.
+8. Tentukan **Short Name** (misal: `app`).
+9. BotFather akan memberikan tautan direct Mini App: `t.me/<USERNAME_BOT>/app`.
+
+#### Cara 3: Aktivasi Cepat via Chat Bot (Khusus Admin)
+Jika Anda sudah menyetel `ADMIN_CHAT_ID`, cukup kirim perintah berikut di ruang obrolan bot:
+```
+/setupapp
+```
+Bot akan otomatis menghubungi Telegram API untuk mendaftarkan URL Worker saat ini sebagai tombol Menu Mini App tanpa perlu masuk ke BotFather.
 
 ### 6. Atur Menu Perintah di BotFather (Opsional)
 Agar daftar perintah otomatis muncul di Telegram:
