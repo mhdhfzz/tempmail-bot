@@ -2565,8 +2565,8 @@ function extractOtpAndLinks(text, subject = '') {
   const urlRegex = /https?:\/\/[^\s<>"'`()]+/gi;
   const foundUrls = text.match(urlRegex) || [];
   let verificationLink = null;
-  const ignoredLinkKeywords = /unsubscribe|optout|subscription|privacy|terms|facebook|twitter|instagram|youtube|linkedin|github\.com\/settings/i;
-  const verifyLinkKeywords = /verify|verification|confirm|confirmation|activate|activation|token=|code=|auth\/|login\?|signup\?/i;
+  const ignoredLinkKeywords = /unsubscribe|berhenti-langganan|berhenti|langganan|optout|opt-out|subscription|privacy|privasi|kebijakan|terms|syarat|ketentuan|bantuan|support|panduan|dukungan|help|pusat-bantuan|preference|manage-account|facebook|twitter|instagram|youtube|linkedin|tiktok|threads|whatsapp|wa\.me|google-play|play\.google|apple\.com|apps\.apple|github\.com\/settings/i;
+  const verifyLinkKeywords = /verify|verification|verifikasi|confirm|confirmation|konfirmasi|activate|activation|aktivasi|aktifkan|validate|validation|validasi|masuk|daftar|magic[-_]link|token=|code=|auth\/|login\?|signup\?|signin\?/i;
 
   for (const url of foundUrls) {
     if (ignoredLinkKeywords.test(url)) continue;
