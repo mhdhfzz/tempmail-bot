@@ -236,6 +236,28 @@ async function handleTelegramMessage(msg, env) {
       break;
     }
 
+    case '/app':
+    case '/miniapp': {
+      const workerUrl = await getWorkerUrl(env);
+      if (!workerUrl) {
+        await sendPlainMessage(env, chatId, '⚠️ URL Mini App belum tersimpan. Jalankan /setupapp terlebih dahulu.');
+        break;
+      }
+      const keyboard = {
+        inline_keyboard: [
+          [{ text: '📱 Buka Mini App Sekarang', web_app: { url: workerUrl } }]
+        ]
+      };
+      await sendHtmlMessage(
+        env,
+        chatId,
+        `📱 <b>VexTempMail Mini App</b>\n\n` +
+        `Ketuk tombol di bawah untuk membuka Mini App langsung di Telegram:`,
+        keyboard
+      );
+      break;
+    }
+
     case '/setupapp': {
       if (env.ADMIN_CHAT_ID && !isAdmin(env, chatId)) {
         await sendPlainMessage(env, chatId, '⛔ Perintah ini hanya untuk admin (ADMIN_CHAT_ID).');
@@ -2845,17 +2867,18 @@ function linkifyTelegramHtml(text = '') {
 
 // --- Telegram WebApp initData Cryptographic Validator ---
 
-async function verifyTelegramWebAppData(initDataString, botToken, maxAgeSeconds = 86400) {
-  if (!initDataString || !botToken) return { valid: false, user: null };
+async function verifyTelegramWebAppData(initDataString, botToken, maxAgeSeconds = 86400 * 30) {
+  if (!initDataString || !botToken) return { valid: false, user: null, error: 'Token atau initData kosong' };
 
   try {
+    const cleanToken = String(botToken).trim();
     const params = new URLSearchParams(initDataString);
     const hash = params.get('hash');
-    if (!hash) return { valid: false, user: null };
+    if (!hash) return { valid: false, user: null, error: 'Parameter hash tidak ada' };
 
     params.delete('hash');
 
-    const keys = Array.from(params.keys()).sort();
+    const keys = Array.from(new Set(params.keys())).sort();
     const dataCheckString = keys.map((key) => `${key}=${params.get(key)}`).join('\n');
 
     const enc = new TextEncoder();
@@ -2867,7 +2890,7 @@ async function verifyTelegramWebAppData(initDataString, botToken, maxAgeSeconds 
       false,
       ['sign']
     );
-    const secretKeyBytes = await crypto.subtle.sign('HMAC', webAppDataKey, enc.encode(botToken));
+    const secretKeyBytes = await crypto.subtle.sign('HMAC', webAppDataKey, enc.encode(cleanToken));
 
     const secretKey = await crypto.subtle.importKey(
       'raw',
@@ -2883,7 +2906,7 @@ async function verifyTelegramWebAppData(initDataString, botToken, maxAgeSeconds 
       .join('');
 
     if (calculatedHash.toLowerCase() !== hash.toLowerCase()) {
-      return { valid: false, user: null };
+      return { valid: false, user: null, error: 'Signature mismatch' };
     }
 
     const authDateStr = params.get('auth_date');
@@ -2891,7 +2914,7 @@ async function verifyTelegramWebAppData(initDataString, botToken, maxAgeSeconds 
     if (maxAgeSeconds > 0 && authDate > 0) {
       const now = Math.floor(Date.now() / 1000);
       if (now - authDate > maxAgeSeconds) {
-        return { valid: false, user: null, expired: true };
+        return { valid: false, user: null, expired: true, error: 'Sesi kadaluarsa' };
       }
     }
 
@@ -2938,7 +2961,7 @@ async function authenticateApiRequest(request, env) {
   let initData = request.headers.get('X-Telegram-Init-Data');
   if (!initData) {
     const url = new URL(request.url);
-    initData = url.searchParams.get('initData');
+    initData = url.searchParams.get('initData') || url.searchParams.get('tgWebAppData');
   }
 
   // Support local development / debug bypass if DEV_AUTH_BYPASS is set
@@ -2946,6 +2969,7 @@ async function authenticateApiRequest(request, env) {
     const devChatId = parseInt(env.ADMIN_CHAT_ID || '123456789', 10);
     return {
       ok: true,
+      isGuest: false,
       user: { id: devChatId, first_name: 'DevUser', username: 'devuser' },
       chatId: devChatId,
       isAdmin: true,
@@ -2953,19 +2977,33 @@ async function authenticateApiRequest(request, env) {
   }
 
   if (!initData) {
-    return { ok: false, error: 'Header X-Telegram-Init-Data tidak ditemukan.', status: 401 };
+    // Mode Tamu (Preview di browser / tanpa session Telegram)
+    return {
+      ok: true,
+      isGuest: true,
+      user: { id: 0, first_name: 'Tamu (Preview)', username: 'guest' },
+      chatId: null,
+      isAdmin: false,
+    };
   }
 
-  const verified = await verifyTelegramWebAppData(initData, env.TELEGRAM_BOT_TOKEN);
+  const cleanToken = (env.TELEGRAM_BOT_TOKEN || '').trim();
+  const verified = await verifyTelegramWebAppData(initData, cleanToken, 86400 * 30);
   if (!verified.valid || !verified.user) {
-    return { ok: false, error: 'Autentikasi Telegram tidak valid atau kadaluarsa.', status: 403 };
+    console.warn('[MiniApp Auth Failed]', { error: verified.error, initDataLen: initData.length });
+    return {
+      ok: false,
+      error: `Autentikasi Telegram gagal (${verified.error || (verified.expired ? 'sesi kadaluarsa' : 'signature')}). Buka ulang Mini App dari bot Telegram.`,
+      status: 403,
+    };
   }
 
   const chatId = verified.user.id;
-  const isAdmin = Boolean(env.ADMIN_CHAT_ID && String(env.ADMIN_CHAT_ID) === String(chatId));
+  const isAdmin = Boolean(env.ADMIN_CHAT_ID && String(env.ADMIN_CHAT_ID).trim() === String(chatId));
 
   return {
     ok: true,
+    isGuest: false,
     user: verified.user,
     chatId,
     isAdmin,
@@ -3001,14 +3039,42 @@ async function handleApiRequest(request, env, ctx, url) {
     return jsonResponse({ ok: false, error: auth.error }, auth.status || 401);
   }
 
+  // Tindakan mutasi (membuat/menghapus) wajib akun Telegram resmi, tolak jika tamu
+  if (auth.isGuest && request.method !== 'GET') {
+    return jsonResponse({ ok: false, error: 'Silakan buka Mini App melalui bot Telegram @VexTempMail_bot untuk melakukan tindakan ini.' }, 401);
+  }
+
   const chatId = auth.chatId;
 
   // Track user jika baru pertama kali membuka miniapp
-  await trackUserAndMaybeNotify(env, chatId, auth.user);
+  if (chatId && auth.user) {
+    await trackUserAndMaybeNotify(env, chatId, auth.user);
+  }
 
   try {
     // GET /api/bootstrap
     if (path === '/bootstrap' && request.method === 'GET') {
+      if (auth.isGuest) {
+        const domains = await getDomainList(env);
+        return jsonResponse({
+          ok: true,
+          isGuest: true,
+          user: auth.user,
+          chatId: null,
+          isAdmin: false,
+          addresses: [],
+          domains,
+          inbox: [],
+          stats: null,
+          qrisAvailable: false,
+          config: {
+            maxAddresses: MAX_ADDRESSES_PER_USER,
+            durationOptionsHours: DURATION_OPTIONS_HOURS,
+            maxInboxHistory: MAX_INBOX_HISTORY,
+          },
+        });
+      }
+
       const [addresses, domains, inboxRaw, qrisBytes] = await Promise.all([
         getUserAddresses(env, chatId),
         getDomainList(env),
@@ -4294,8 +4360,47 @@ function renderMiniAppHtml(env) {
       }
     }
 
+    function getRawInitData() {
+      // 1. Dari Telegram WebApp SDK
+      if (window.Telegram?.WebApp?.initData) {
+        const d = window.Telegram.WebApp.initData;
+        try { sessionStorage.setItem('vex_init_data', d); } catch (e) {}
+        return d;
+      }
+      // 2. Dari URL hash (#tgWebAppData=...)
+      if (window.location.hash) {
+        try {
+          const hashStr = window.location.hash.replace(/^#/, '');
+          const params = new URLSearchParams(hashStr);
+          const hashData = params.get('tgWebAppData');
+          if (hashData) {
+            try { sessionStorage.setItem('vex_init_data', hashData); } catch (e) {}
+            return hashData;
+          }
+        } catch (e) {}
+      }
+      // 3. Dari URL query string (?tgWebAppData=... atau ?initData=...)
+      if (window.location.search) {
+        try {
+          const searchParams = new URLSearchParams(window.location.search);
+          const qData = searchParams.get('tgWebAppData') || searchParams.get('initData');
+          if (qData) {
+            try { sessionStorage.setItem('vex_init_data', qData); } catch (e) {}
+            return qData;
+          }
+        } catch (e) {}
+      }
+      // 4. Dari sessionStorage cache
+      try {
+        const cached = sessionStorage.getItem('vex_init_data');
+        if (cached) return cached;
+      } catch (e) {}
+
+      return '';
+    }
+
     function getAuthHeaders() {
-      const initData = tg?.initData || '';
+      const initData = getRawInitData();
       return {
         'Content-Type': 'application/json',
         'X-Telegram-Init-Data': initData,
@@ -4314,30 +4419,71 @@ function renderMiniAppHtml(env) {
       btnRefresh.classList.add('rotating');
       try {
         const data = await apiFetch('/bootstrap');
-        if (!data.ok) throw new Error(data.error);
+        if (!data.ok) throw new Error(data.error || 'Gagal memuat data');
 
+        state.isGuest = Boolean(data.isGuest);
         state.user = data.user;
-        state.isAdmin = data.isAdmin;
+        state.isAdmin = Boolean(data.isAdmin);
         state.addresses = data.addresses || [];
         state.domains = data.domains || [];
         state.inbox = data.inbox || [];
         state.stats = data.stats;
 
         // UI Updates
-        document.getElementById('user-name').textContent = state.user?.first_name || 'Pengguna';
+        if (state.isGuest) {
+          document.getElementById('user-name').textContent = 'Tamu (Preview)';
+        } else {
+          document.getElementById('user-name').textContent = state.user?.first_name || 'Pengguna';
+        }
+
         if (state.isAdmin) {
           document.getElementById('nav-item-admin').style.display = 'flex';
           renderAdminStats();
+        } else {
+          document.getElementById('nav-item-admin').style.display = 'none';
         }
 
         renderAddresses();
         renderInbox();
         populateDomainSelects();
+
+        // Jika mode tamu tapi Telegram SDK tersedia, coba re-fetch sekali lagi setelah 400ms jika initData terlambat muncul
+        if (state.isGuest && window.Telegram?.WebApp && !window._retriedBootstrap) {
+          window._retriedBootstrap = true;
+          setTimeout(() => {
+            if (getRawInitData()) {
+              loadBootstrapData();
+            }
+          }, 400);
+        }
       } catch (err) {
-        showToast('Gagal memuat data: ' + err.message, '⚠️');
+        console.error('loadBootstrapData error:', err);
+        document.getElementById('user-name').textContent = 'Gagal Memuat';
+        showToast('Gagal memuat: ' + err.message, '⚠️');
+        renderErrorState(err.message);
       } finally {
         setTimeout(() => btnRefresh.classList.remove('rotating'), 400);
       }
+    }
+
+    function renderErrorState(errorMessage = '') {
+      const inboxContainer = document.getElementById('inbox-list');
+      const addrContainer = document.getElementById('address-list');
+
+      const errorHtml = \`
+        <div class="empty-state" style="padding: 30px 16px; background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.25); border-radius: var(--radius-md);">
+          <div class="empty-icon" style="font-size: 42px; margin-bottom: 8px;">⚠️</div>
+          <div class="empty-title" style="color: #fca5a5;">Gagal Memuat Data</div>
+          <div class="empty-desc" style="max-width: 320px; margin: 0 auto 16px; color: #fecaca; font-size: 13px;">\${escapeHtml(errorMessage)}</div>
+          <div style="display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
+            <button class="btn btn-primary btn-sm" onclick="loadBootstrapData()">🔄 Coba Muat Ulang</button>
+            <a href="https://t.me/VexTempMail_bot" class="btn btn-glass btn-sm" style="text-decoration: none;">🤖 Buka di Telegram</a>
+          </div>
+        </div>
+      \`;
+
+      if (inboxContainer) inboxContainer.innerHTML = errorHtml;
+      if (addrContainer) addrContainer.innerHTML = errorHtml;
     }
 
     // --- View Navigation ---
@@ -4368,6 +4514,22 @@ function renderMiniAppHtml(env) {
 
       badge.textContent = state.addresses.length;
       badge.style.display = state.addresses.length > 0 ? 'inline-block' : 'none';
+
+      if (state.isGuest) {
+        container.innerHTML = \`
+          <div class="empty-state" style="padding: 30px 16px; background: rgba(255, 255, 255, 0.03); border: 1px dashed var(--border-glass-bright); border-radius: var(--radius-md);">
+            <div class="empty-icon" style="font-size: 44px; margin-bottom: 10px;">📮</div>
+            <div class="empty-title">Kelola Alamat di Telegram</div>
+            <div class="empty-desc" style="max-width: 320px; margin: 0 auto 16px; font-size: 13px; color: var(--text-muted);">
+              Alamat email Anda tersimpan aman dan terhubung dengan akun Telegram Anda. Silakan buka melalui bot Telegram untuk membuat alamat email.
+            </div>
+            <a href="https://t.me/VexTempMail_bot" class="btn btn-glass btn-sm" style="text-decoration: none;">
+              <span>🤖 Buka @VexTempMail_bot</span>
+            </a>
+          </div>
+        \`;
+        return;
+      }
 
       if (state.addresses.length === 0) {
         container.innerHTML = \`
@@ -4493,6 +4655,12 @@ function renderMiniAppHtml(env) {
       const customName = document.getElementById('custom-alias-input').value.trim();
 
       const btn = document.getElementById('btn-submit-create');
+
+      if (state.isGuest) {
+        showToast('Buka Mini App di bot Telegram untuk membuat alamat.', '⚠️');
+        return;
+      }
+
       btn.textContent = 'Membuat Alamat...';
       btn.disabled = true;
 
@@ -4528,6 +4696,24 @@ function renderMiniAppHtml(env) {
       const badge = document.getElementById('badge-inbox');
       badge.textContent = state.inbox.length;
       badge.style.display = state.inbox.length > 0 ? 'inline-block' : 'none';
+
+      if (state.isGuest) {
+        container.innerHTML = \`
+          <div class="empty-state" style="padding: 34px 16px; background: rgba(255, 255, 255, 0.03); border: 1px dashed var(--border-glass-bright); border-radius: var(--radius-md);">
+            <div class="empty-icon" style="font-size: 48px; margin-bottom: 12px;">📱</div>
+            <div class="empty-title">Mode Tamu (Buka di Telegram)</div>
+            <div class="empty-desc" style="max-width: 330px; margin: 0 auto 18px; font-size: 13px; line-height: 1.6; color: var(--text-muted);">
+              Mini App ini memerlukan autentikasi akun Telegram untuk menampilkan kotak masuk email Anda secara aman.
+              <br><br>
+              Buka bot Telegram <b>@VexTempMail_bot</b> dan ketuk tombol <b>Menu</b> di pojok kiri bawah, atau klik tombol di bawah:
+            </div>
+            <a href="https://t.me/VexTempMail_bot" class="btn btn-primary btn-sm" style="display: inline-flex; align-items: center; gap: 6px; text-decoration: none; font-weight: 700;">
+              <span>🤖 Buka @VexTempMail_bot di Telegram</span>
+            </a>
+          </div>
+        \`;
+        return;
+      }
 
       if (state.inbox.length === 0) {
         container.innerHTML = \`
