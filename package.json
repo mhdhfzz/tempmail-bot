@@ -1,0 +1,27 @@
+{
+  "name": "tempmail-bot",
+  "version": "1.0.0",
+  "description": "⚡ Bot Telegram Temp-Mail serverless berbasis Cloudflare Workers & KV dengan fitur otomatis deteksi OTP, 1-tap copy, dan antarmuka Telegram Mini App modern.",
+  "main": "tempmail-bot.js",
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "keywords": [
+    "telegram-bot",
+    "temp-mail",
+    "cloudflare-workers",
+    "telegram-miniapp",
+    "serverless",
+    "email-routing",
+    "otp-detector"
+  ],
+  "author": "mhdhfzz",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mhdhfzz/tempmail-bot.git"
+  },
+  "homepage": "https://t.me/VexTempMail_bot"
+}
