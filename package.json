@@ -1,7 +1,7 @@
 {
   "name": "tempmail-bot",
   "version": "1.0.0",
-  "description": "⚡ Bot Telegram Temp-Mail serverless berbasis Cloudflare Workers & KV dengan fitur otomatis deteksi OTP, 1-tap copy, dan antarmuka Telegram Mini App modern.",
+  "description": "Bot Telegram Temp-Mail serverless berbasis Cloudflare Workers & KV dengan fitur otomatis deteksi OTP, 1-tap copy, dan antarmuka Telegram Mini App modern.",
   "main": "tempmail-bot.js",
   "type": "module",
   "scripts": {
