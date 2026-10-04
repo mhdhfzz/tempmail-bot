@@ -693,6 +693,143 @@ async function handleCallbackQuery(query, env) {
       return;
     }
 
+    if (data.startsWith('bc_cancel:')) {
+      if (!isAdmin(env, chatId)) {
+        await answerCallback(env, query.id, 'Akses khusus admin.', true);
+        return;
+      }
+      const draftId = data.slice(10);
+      await env.TEMPMAIL_KV.delete(`broadcast:draft:${draftId}`);
+      await answerCallback(env, query.id, '❌ Broadcast dibatalkan.');
+      const cancelText =
+        `❌ <b>Pengiriman Broadcast Dibatalkan</b>\n\n` +
+        `Draf pengumuman telah dibuang dan tidak disiarkan ke pengguna.`;
+      await edit({
+        text: cancelText,
+        fallbackHtml: cancelText,
+        keyboard: {
+          inline_keyboard: [
+            [{ text: '🛠️ Panel Admin', callback_data: 'admin_help' }],
+            [{ text: '⬅️ Menu Utama', callback_data: 'm' }],
+          ],
+        },
+      });
+      return;
+    }
+
+    if (data.startsWith('bc_send:')) {
+      if (!isAdmin(env, chatId)) {
+        await answerCallback(env, query.id, 'Akses khusus admin.', true);
+        return;
+      }
+      const draftId = data.slice(8);
+      const rawDraft = await env.TEMPMAIL_KV.get(`broadcast:draft:${draftId}`);
+      if (!rawDraft) {
+        await answerCallback(env, query.id, '⚠️ Draf kedaluwarsa atau tidak ditemukan.', true);
+        await edit({
+          text: '⚠️ <b>Sesi Broadcast Kedaluwarsa</b>\n\nDraf pengumuman ini sudah tidak aktif (>10 menit). Silakan ketik perintah <code>/broadcast</code> baru.',
+          fallbackHtml: '⚠️ <b>Sesi Broadcast Kedaluwarsa</b>\n\nDraf pengumuman ini sudah tidak aktif (>10 menit). Silakan ketik perintah <code>/broadcast</code> baru.',
+          keyboard: {
+            inline_keyboard: [
+              [{ text: '🛠️ Panel Admin', callback_data: 'admin_help' }],
+              [{ text: '⬅️ Menu Utama', callback_data: 'm' }],
+            ],
+          },
+        });
+        return;
+      }
+
+      const draft = JSON.parse(rawDraft);
+      await answerCallback(env, query.id, '🚀 Memulai pengiriman broadcast...');
+
+      await edit({
+        text: '⏳ <b>Sedang Mengirimkan Broadcast...</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nMohon tunggu, bot sedang menyiarkan pengumuman ke seluruh pengguna.',
+        fallbackHtml: '⏳ <b>Sedang Mengirimkan Broadcast...</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nMohon tunggu, bot sedang menyiarkan pengumuman ke seluruh pengguna.',
+      });
+
+      // Kumpulkan seluruh chat ID unik pengguna dari KV prefix seen:
+      const userChatIds = new Set();
+      let cursor = undefined;
+      do {
+        const listRes = await env.TEMPMAIL_KV.list({ prefix: 'seen:', cursor, limit: 1000 });
+        for (const k of listRes.keys) {
+          const uId = k.name.replace(/^seen:/, '');
+          if (uId) userChatIds.add(uId);
+        }
+        cursor = listRes.list_complete ? undefined : listRes.cursor;
+      } while (cursor);
+
+      const targetList = Array.from(userChatIds);
+      const broadcastMsg =
+        `📢 <b>INFORMASI RESMI BOT</b>\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        draft.text;
+
+      const userKeyboard = workerUrl
+        ? {
+            inline_keyboard: [
+              [{ text: '📱 Buka Mini App', web_app: { url: workerUrl } }],
+            ],
+          }
+        : undefined;
+
+      let successCount = 0;
+      let blockedCount = 0;
+      let failedCount = 0;
+      const startTime = Date.now();
+
+      for (const targetId of targetList) {
+        try {
+          const res = await tgApi(env, 'sendMessage', {
+            chat_id: targetId,
+            text: broadcastMsg,
+            parse_mode: 'HTML',
+            reply_markup: userKeyboard,
+            disable_web_page_preview: false,
+          });
+
+          if (res.ok) {
+            successCount++;
+          } else {
+            const errJson = await res.json().catch(() => ({}));
+            if (res.status === 403 || errJson.error_code === 403 || (errJson.description && errJson.description.includes('blocked'))) {
+              blockedCount++;
+              // Hapus key seen untuk pengguna yang memblokir bot
+              env.TEMPMAIL_KV.delete(`seen:${targetId}`).catch(() => {});
+            } else {
+              failedCount++;
+            }
+          }
+        } catch {
+          failedCount++;
+        }
+      }
+
+      const durationSec = Math.max(1, Math.round((Date.now() - startTime) / 1000));
+      await env.TEMPMAIL_KV.delete(`broadcast:draft:${draftId}`);
+
+      const reportText =
+        `✅ <b>Broadcast Selesai Dikirim!</b>\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+        `👥 <b>Total Target:</b> ${targetList.length} pengguna\n` +
+        `📬 <b>Berhasil Terkirim:</b> ${successCount} pengguna\n` +
+        `🚫 <b>Diblokir/Tidak Aktif:</b> ${blockedCount} pengguna\n` +
+        (failedCount > 0 ? `⚠️ <b>Gagal Lainnya:</b> ${failedCount} pengguna\n` : '') +
+        `⏱️ <b>Waktu Proses:</b> ${durationSec} detik`;
+
+      await edit({
+        text: reportText,
+        fallbackHtml: reportText,
+        keyboard: {
+          inline_keyboard: [
+            [{ text: '🛠️ Panel Admin', callback_data: 'admin_help' }],
+            [{ text: '⬅️ Menu Utama', callback_data: 'm' }],
+          ],
+        },
+      });
+      return;
+    }
+
     if (data === 'new') {
       if (!env.TEMPMAIL_DOMAIN) {
         await answerCallback(env, query.id, 'Bot belum dikonfigurasi (TEMPMAIL_DOMAIN kosong).', true);
