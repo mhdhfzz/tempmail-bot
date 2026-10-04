@@ -25,6 +25,8 @@ Berjalan di atas **Cloudflare Workers** (serverless) dan **Cloudflare KV**. Sang
 - **Multi-Domain**: Mendukung lebih dari satu domain email sekaligus.
 - **Lampiran Lengkap**: PDF, dokumen Office, arsip ZIP, dan file lampiran lainnya otomatis diteruskan sebagai dokumen Telegram.
 - **Riwayat & Navigasi Interaktif**: Antarmuka responsif berbasis tombol (*inline keyboard*) dengan paginasi riwayat email tanpa batas pemotongan teks.
+- **📢 Broadcast Pengumuman Admin**: Kirim pengumuman/informasi terbaru (misal: penambahan domain baru) ke seluruh pengguna bot secara serentak dengan sistem pratinjau (preview), tombol konfirmasi, dan pelaporan statistik.
+- **🛠️ Panel Panduan Admin Terpadu (`/admin`)**: Menu khusus admin yang merangkum seluruh perintah bot dan tombol aksi cepat tanpa perlu membuka catatan manual.
 - **Panel & Notifikasi Admin**: Notifikasi penggunaan real-time, ringkasan statistik bot (`/stats`), ubah QRIS donasi via chat (`/setqris`), setup tombol Mini App (`/setupapp`), serta manajemen domain (`/adddomain`, `/removedomain`).
 
 ---
@@ -204,6 +206,8 @@ Agar daftar perintah otomatis muncul di Telegram:
 
 ### Khusus Admin (Sesuai `ADMIN_CHAT_ID`)
 - **Notifikasi Real-Time**: Menerima pesan instan saat ada pengguna baru, pembuatan/penghapusan alamat, dan email masuk.
+- `/admin` (atau `/adminhelp`) — Buka panel panduan lengkap seluruh perintah khusus admin beserta tombol aksi cepat.
+- `/broadcast <pesan>` (atau `/bc <pesan>`) — Siarkan pengumuman resmi ke seluruh pengguna bot dengan pratinjau pesan, tombol konfirmasi, dan laporan statistik pengiriman.
 - `/stats` — Ringkasan metrik bot dalam tabel (total user, alamat aktif, email diteruskan).
 - `/setupapp` — Daftarkan dan aktifkan tombol Menu Mini App Telegram secara otomatis.
 - `/setqris` — Perbarui gambar QRIS donasi langsung via chat (cukup kirim foto setelah menjalankan perintah).
