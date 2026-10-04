@@ -467,9 +467,83 @@ async function handleTelegramMessage(msg, env) {
       break;
     }
 
+    case '/broadcast':
+    case '/bc': {
+      if (!isAdmin(env, chatId)) {
+        await sendView(env, chatId, viewMenu(firstName, 'Perintah tidak dikenali. Pakai tombol di bawah ya 👇'));
+        break;
+      }
+      await handleBroadcastCommand(env, chatId, arg);
+      break;
+    }
+
     default:
       await sendView(env, chatId, viewMenu(firstName, 'Perintah tidak dikenali. Pakai tombol di bawah ya 👇'));
   }
+}
+
+async function handleBroadcastCommand(env, chatId, rawArg) {
+  const messageText = (rawArg || '').trim();
+  if (!messageText) {
+    const helpHtml =
+      `⚠️ <b>Pesan Pengumuman Kosong!</b>\n\n` +
+      `Silakan masukkan teks pesan yang ingin disiarkan ke seluruh pengguna.\n\n` +
+      `<b>Format:</b>\n` +
+      `<code>/broadcast &lt;isi pesan&gt;</code> atau <code>/bc &lt;isi pesan&gt;</code>\n\n` +
+      `<b>Contoh:</b>\n` +
+      `<code>/broadcast Halo semuanya! Kami baru saja menambahkan domain baru: @temp2.com 🎉</code>\n\n` +
+      `<i>Mendukung format HTML (tebal, miring, link).</i>`;
+    await sendHtmlMessage(env, chatId, helpHtml);
+    return;
+  }
+
+  // Generate ID unik untuk draft
+  const draftId = `bc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+  // Hitung perkiraan pengguna
+  let totalEstimate = await getCounter(env, 'stats:totalUsers');
+  if (!totalEstimate) {
+    try {
+      const seenList = await env.TEMPMAIL_KV.list({ prefix: 'seen:' });
+      totalEstimate = seenList.keys.length;
+    } catch {
+      totalEstimate = 0;
+    }
+  }
+
+  // Simpan draft ke KV selama 10 menit (600 detik)
+  const draftData = {
+    id: draftId,
+    adminChatId: chatId,
+    text: messageText,
+    totalEstimate,
+    createdAt: Date.now(),
+  };
+  await env.TEMPMAIL_KV.put(`broadcast:draft:${draftId}`, JSON.stringify(draftData), { expirationTtl: 600 });
+
+  const previewHtml =
+    `📢 <b>PRATINJAU PENGUMUMAN BROADCAST</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `👥 <b>Estimasi Target:</b> ~${totalEstimate} pengguna\n` +
+    `⏱️ <b>Masa Berlaku Konfirmasi:</b> 10 menit\n\n` +
+    `👇 <b>Pesan yang akan diterima pengguna:</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `📢 <b>INFORMASI RESMI BOT</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    messageText;
+
+  const keyboard = {
+    inline_keyboard: [
+      [
+        { text: `🚀 Kirim Sekarang (~${totalEstimate} User)`, callback_data: `bc_send:${draftId}` },
+      ],
+      [
+        { text: '❌ Batalkan', callback_data: `bc_cancel:${draftId}` },
+      ],
+    ],
+  };
+
+  await sendHtmlMessage(env, chatId, previewHtml, keyboard);
 }
 
 // --- Callback Query Handler ---
