@@ -231,7 +231,8 @@ async function handleTelegramMessage(msg, env) {
       if (command === '/start' && workerUrl) {
         configureTelegramMenuButton(env, workerUrl).catch(() => { });
       }
-      const view = command === '/help' ? viewHelp(workerUrl) : viewMenu(firstName, '', workerUrl);
+      const isAdm = isAdmin(env, chatId);
+      const view = command === '/help' ? viewHelp(workerUrl, isAdm) : viewMenu(firstName, '', workerUrl);
       await sendView(env, chatId, view);
       break;
     }
@@ -456,6 +457,16 @@ async function handleTelegramMessage(msg, env) {
       break;
     }
 
+    case '/admin':
+    case '/adminhelp': {
+      if (!isAdmin(env, chatId)) {
+        await sendView(env, chatId, viewMenu(firstName, 'Perintah tidak dikenali. Pakai tombol di bawah ya 👇'));
+        break;
+      }
+      await sendView(env, chatId, viewAdminHelp());
+      break;
+    }
+
     default:
       await sendView(env, chatId, viewMenu(firstName, 'Perintah tidak dikenali. Pakai tombol di bawah ya 👇'));
   }
@@ -509,7 +520,102 @@ async function handleCallbackQuery(query, env) {
 
     if (data === 'help') {
       await answerCallback(env, query.id);
-      await edit(viewHelp(workerUrl));
+      const isAdm = isAdmin(env, chatId);
+      await edit(viewHelp(workerUrl, isAdm));
+      return;
+    }
+
+    if (data === 'admin_stats') {
+      if (!isAdmin(env, chatId)) {
+        await answerCallback(env, query.id, 'Akses khusus admin.', true);
+        return;
+      }
+      await answerCallback(env, query.id);
+      const totalUsers = await getCounter(env, 'stats:totalUsers');
+      const totalCreated = await getCounter(env, 'stats:totalAddressesCreated');
+      const totalEmails = await getCounter(env, 'stats:totalEmailsForwarded');
+      const activeInfo = await getActiveAddressCount(env);
+      const activeLabel = activeInfo.count === null ? 'tidak diketahui' : `${activeInfo.count}${activeInfo.complete ? '' : '+'}`;
+      await edit(viewAdminStats(totalUsers, totalCreated, activeLabel, totalEmails));
+      return;
+    }
+
+    if (data === 'admin_domains') {
+      if (!isAdmin(env, chatId)) {
+        await answerCallback(env, query.id, 'Akses khusus admin.', true);
+        return;
+      }
+      await answerCallback(env, query.id);
+      const allDomains = await getDomainList(env);
+      const text =
+        allDomains.length === 0
+          ? '⚠️ Belum ada domain yang dikonfigurasi sama sekali.'
+          : `🌐 <b>Domain aktif saat ini:</b>\n\n${allDomains.map((d) => `• <code>${escapeTelegramHtml(d)}</code>`).join('\n')}`;
+      await edit({
+        text,
+        fallbackHtml: text,
+        keyboard: {
+          inline_keyboard: [
+            [{ text: '🛠️ Kembali ke Panel Admin', callback_data: 'admin_help' }],
+            [{ text: '⬅️ Menu Utama', callback_data: 'm' }],
+          ],
+        },
+      });
+      return;
+    }
+
+    if (data === 'admin_setqris') {
+      if (!isAdmin(env, chatId)) {
+        await answerCallback(env, query.id, 'Akses khusus admin.', true);
+        return;
+      }
+      await answerCallback(env, query.id);
+      await env.TEMPMAIL_KV.put(`pendingqris:${chatId}`, '1', { expirationTtl: 300 });
+      await sendPlainMessage(
+        env,
+        chatId,
+        '🖼️ Oke, sekarang kirim gambar QRIS-nya (kirim sebagai foto biasa, jangan sebagai file/dokumen). Berlaku 5 menit.'
+      );
+      return;
+    }
+
+    if (data === 'admin_setupapp') {
+      if (!isAdmin(env, chatId)) {
+        await answerCallback(env, query.id, 'Akses khusus admin.', true);
+        return;
+      }
+      await answerCallback(env, query.id);
+      const workerUrl = await getWorkerUrl(env);
+      if (!workerUrl) {
+        await sendHtmlMessage(
+          env,
+          chatId,
+          '⚠️ URL Worker belum diketahui.\n\nKirim perintah dengan menyertakan URL Worker Anda:\n<code>/setupapp https://nama-worker.username.workers.dev</code>\n\natau buka Web App Anda di browser satu kali.'
+        );
+        return;
+      }
+      const success = await configureTelegramMenuButton(env, workerUrl);
+      if (success) {
+        await sendHtmlMessage(
+          env,
+          chatId,
+          `✅ <b>Tombol Menu Mini App Berhasil Diaktifkan!</b>\n\n` +
+          `URL: <code>${escapeTelegramHtml(workerUrl)}</code>\n\n` +
+          `Tombol Menu di pojok kiri bawah chat sekarang sudah terhubung ke Mini App Anda.`
+        );
+      } else {
+        await sendPlainMessage(env, chatId, '⚠️ Gagal mengatur tombol Menu Mini App ke Telegram API.');
+      }
+      return;
+    }
+
+    if (data === 'admin_help') {
+      if (!isAdmin(env, chatId)) {
+        await answerCallback(env, query.id, 'Akses khusus admin.', true);
+        return;
+      }
+      await answerCallback(env, query.id);
+      await edit(viewAdminHelp());
       return;
     }
 
@@ -855,7 +961,7 @@ function viewMenu(firstName = '', note = '', workerUrl = null) {
   };
 }
 
-function viewHelp(workerUrl = null) {
+function viewHelp(workerUrl = null, isAdm = false) {
   const blocks = [
     { type: 'section_heading', text: '❓ Panduan Penggunaan' },
     {
@@ -868,7 +974,6 @@ function viewHelp(workerUrl = null) {
         { text: '/delete <alamat> — Hapus alamat tertentu' },
         { text: '/deleteall — Hapus semua alamat sekaligus' },
         { text: '/donasi — Dukung operasional bot' },
-        { text: '/setupapp — Setup tombol Menu Mini App (admin)' },
       ],
     },
     { type: 'divider' },
@@ -882,7 +987,7 @@ function viewHelp(workerUrl = null) {
     },
   ];
 
-  const fallbackHtml =
+  let fallbackHtml =
     `❓ <b>Panduan Penggunaan</b>\n\n` +
     `<b>Perintah yang tersedia:</b>\n` +
     `• <code>/new</code> — Buat alamat baru (acak/custom)\n` +
@@ -891,11 +996,18 @@ function viewHelp(workerUrl = null) {
     `• <code>/inbox</code> — Lihat riwayat semua email\n` +
     `• <code>/delete &lt;alamat&gt;</code> — Hapus alamat tertentu\n` +
     `• <code>/deleteall</code> — Hapus semua alamat sekaligus\n` +
-    `• <code>/donasi</code> — Dukung operasional bot\n` +
-    `• <code>/setupapp</code> — Setup tombol Menu Mini App (admin)\n\n` +
+    `• <code>/donasi</code> — Dukung operasional bot\n\n` +
     `<blockquote>Maksimal ${MAX_ADDRESSES_PER_USER} alamat aktif (6-72 jam).\n` +
     `Gunakan Mini App untuk tampilan email asli bergaya Gmail.</blockquote>\n\n` +
     `Atau cukup gunakan tombol navigasi di bawah 👇`;
+
+  if (isAdm) {
+    blocks.push({
+      type: 'block_quotation',
+      text: '🛠️ Mode Admin Aktif:\nKetik /admin untuk melihat panel perintah khusus admin.',
+    });
+    fallbackHtml += `\n\n🛠️ <b>Mode Admin Aktif:</b>\nKetik <code>/admin</code> untuk melihat panel perintah khusus admin.`;
+  }
 
   return {
     richMessage: { blocks },
@@ -1671,6 +1783,57 @@ function viewAdminStats(totalUsers, totalCreated, activeLabel, totalEmails) {
     fallbackHtml,
     text: fallbackHtml,
     keyboard: mainMenuKeyboard(),
+  };
+}
+
+function viewAdminHelp() {
+  const text =
+    `🛠️ <b>PANEL PANDUAN PERINTAH ADMIN</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `Halo Admin! Berikut daftar lengkap perintah khusus untuk mengelola bot:\n\n` +
+    `📢 <b>Broadcast & Pengumuman:</b>\n` +
+    `• <code>/broadcast &lt;pesan&gt;</code> (alias <code>/bc</code>)\n` +
+    `  Kirim pengumuman resmi ke seluruh pengguna bot dengan pratinjau & konfirmasi.\n` +
+    `  Mendukung format HTML (tebal, miring, link).\n\n` +
+    `📊 <b>Pemantauan & Statistik:</b>\n` +
+    `• <code>/stats</code>\n` +
+    `  Lihat total pengguna, total email masuk, dan alamat aktif.\n` +
+    `• <code>/domains</code>\n` +
+    `  Lihat semua domain aktif yang terhubung.\n\n` +
+    `🌐 <b>Manajemen Domain:</b>\n` +
+    `• <code>/adddomain &lt;domain&gt;</code>\n` +
+    `  Tambah domain baru (contoh: <code>/adddomain temp2.com</code>).\n` +
+    `• <code>/removedomain &lt;domain&gt;</code>\n` +
+    `  Hapus domain dari daftar tambahan.\n\n` +
+    `⚙️ <b>Pengaturan & Integrasi:</b>\n` +
+    `• <code>/setqris</code>\n` +
+    `  Upload gambar QRIS donasi baru via chat Telegram.\n` +
+    `• <code>/setupapp &lt;url&gt;</code>\n` +
+    `  Atur tombol Menu Mini App di pojok kiri bawah chat pengguna.\n` +
+    `• <code>/admin</code> (alias <code>/adminhelp</code>)\n` +
+    `  Membuka kembali panel panduan admin ini.\n\n` +
+    `<i>Pilih tombol aksi cepat di bawah untuk eksekusi instan:</i>`;
+
+  const keyboard = {
+    inline_keyboard: [
+      [
+        { text: '📊 Cek Statistik', callback_data: 'admin_stats' },
+        { text: '🌐 Daftar Domain', callback_data: 'admin_domains' },
+      ],
+      [
+        { text: '🖼️ Upload QRIS', callback_data: 'admin_setqris' },
+        { text: '📱 Setup Mini App', callback_data: 'admin_setupapp' },
+      ],
+      [
+        { text: '⬅️ Menu Utama', callback_data: 'm' },
+      ],
+    ],
+  };
+
+  return {
+    fallbackHtml: text,
+    text,
+    keyboard,
   };
 }
 
