@@ -133,21 +133,34 @@ Agar setiap email yang dikirim ke domain Anda diteruskan ke Worker bot:
    - **Destination**: Pilih Worker bot Anda (`tempmail-bot`)
 4. Klik **Save**.
 
-### 4. Aktifkan Webhook Telegram
-1. Salin alamat URL Worker Anda dari halaman overview Worker (contoh: `https://tempmail-bot.username.workers.dev`).
-2. Buka URL aktivasi webhook berikut di browser (sesuaikan nilai di dalam tanda `<>`):
-   ```
-   https://api.telegram.org/bot<TOKEN_BOT_KAMU>/setWebhook?url=<URL_WORKER_KAMU>&secret_token=<WEBHOOK_SECRET_KAMU>
-   ```
-   *(Jika Anda tidak mengisi `WEBHOOK_SECRET`, hapus bagian `&secret_token=...`)*.
-3. Jika browser menampilkan respon `{"ok":true,"result":true,"description":"Webhook was set"}`, bot Anda sudah aktif!
+### 4. Sambungkan Webhook Telegram (Satu Klik)
 
-### 5. Pengaturan Mini App di Telegram (BotFather & Satu Klik)
+Buka URL berikut di browser Anda:
 
-Terdapat 3 cara praktis untuk mengaktifkan Mini App di bot Anda:
+```
+https://<url-worker-anda>/setup
+```
+*(Contoh: `https://tempmail-bot.username.workers.dev/setup`)*
 
-#### Cara 1: Mengatur Tombol Menu Mini App via BotFather (Paling Direkomendasikan)
-Tombol ini akan muncul di pojok kiri bawah kolom obrolan chat bot pengguna:
+Muncul konfirmasi berhasil, dan bot Telegram langsung aktif! 🎉
+
+Halaman setup ini secara otomatis menyelesaikan seluruh konfigurasi penting dalam 1 detik:
+- ✅ **Menghubungkan Webhook Telegram** (termasuk validasi keamanan `WEBHOOK_SECRET` bila ada).
+- ✅ **Mengaktifkan Tombol Menu Mini App** di pojok kiri bawah ruang obrolan Telegram pengguna.
+- ✅ **Mendaftarkan Daftar Perintah Bot** (`/new`, `/list`, `/inbox`, `/delete`, `/deleteall`, `/donasi`, `/help`) sehingga menu saran otomatis muncul saat pengguna mengetik `/`.
+- ✅ **Menyimpan URL Worker ke sistem** untuk kelancaran integrasi Web & Mini App.
+
+> 💡 **Metode Manual (Alternatif):** Jika tidak ingin membuka halaman `/setup`, Anda tetap bisa memasang webhook manual dengan membuka URL:
+> `https://api.telegram.org/bot<TOKEN_BOT_KAMU>/setWebhook?url=<URL_WORKER_KAMU>&secret_token=<WEBHOOK_SECRET_KAMU>`
+
+---
+
+### 5. Pengaturan Mini App di Telegram (Opsional)
+
+*(Catatan: Tombol Menu Mini App di pojok kiri bawah chat sudah otomatis aktif saat Anda membuka URL `/setup` di atas. Pilihan di bawah ini hanya diperlukan jika Anda ingin kustomisasi tambahan).*
+
+#### Cara 1: Mengatur Tombol Menu Mini App via BotFather (Kustom Teks)
+Jika ingin mengubah teks tombol menu (misal: "Buka Aplikasi"):
 1. Buka [@BotFather](https://t.me/BotFather) di Telegram.
 2. Kirim perintah `/setmenubutton` dan pilih bot Anda (misal `@VexTempMail_bot`).
 3. BotFather akan meminta URL Web App, kirimkan URL Worker Anda:
@@ -159,7 +172,7 @@ Tombol ini akan muncul di pojok kiri bawah kolom obrolan chat bot pengguna:
 5. Selesai! Pengguna sekarang dapat membuka Mini App langsung dari tombol di samping kolom ketik chat.
 
 #### Cara 2: Membuat Mini App Resmi & Direct Link (`t.me/bot/app`) via BotFather
-Memungkinkan Anda memiliki tautan langsung (seperti `t.me/VexTempMail_bot/app`) yang dapat dibagikan ke mana saja:
+Memungkinkan Anda memiliki tautan langsung (seperti `t.me/VexTempMail_bot/app`) yang dapat dibagikan di bio, channel, atau media sosial:
 1. Buka [@BotFather](https://t.me/BotFather), kirim perintah `/newapp`.
 2. Pilih bot Anda.
 3. Masukkan **Title** (Judul aplikasi): `VexTempMail`
@@ -178,6 +191,8 @@ Jika Anda sudah menyetel `ADMIN_CHAT_ID`, cukup kirim perintah berikut di ruang 
 Bot akan otomatis menghubungi Telegram API untuk mendaftarkan URL Worker saat ini sebagai tombol Menu Mini App tanpa perlu masuk ke BotFather.
 
 ### 6. Atur Menu Perintah di BotFather (Opsional)
+*(Catatan: Seluruh perintah bot sudah didaftarkan secara otomatis ke Telegram saat Anda mengakses `/setup`. Langkah ini hanya opsional jika Anda ingin mengubah deskripsi perintah secara manual di BotFather).*
+
 Agar daftar perintah otomatis muncul di Telegram:
 1. Chat [@BotFather](https://t.me/BotFather), kirim `/setcommands`, lalu pilih bot Anda.
 2. Tempel daftar berikut:
