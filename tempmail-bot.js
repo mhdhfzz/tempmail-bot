@@ -40,6 +40,11 @@ export default {
       return renderMiniAppResponse(env);
     }
 
+    // One-Click Setup & Webhook Telegram Integration (/setup)
+    if (url.pathname === '/setup' || url.pathname === '/setup/') {
+      return handleSetupRequest(request, env, ctx, url);
+    }
+
     if (request.method !== 'POST') {
       return new Response('Bot temp-mail aktif.', { status: 200 });
     }
@@ -3691,6 +3696,540 @@ async function handleApiRequest(request, env, ctx, url) {
     console.error('API Error:', err);
     return jsonResponse({ ok: false, error: err.message || 'Internal Server Error' }, 500);
   }
+}
+
+// --- One-Click Setup & Telegram Webhook Integration (/setup) ---
+
+async function handleSetupRequest(request, env, ctx, url) {
+  const isJson = url.searchParams.get('format') === 'json' || request.headers.get('Accept')?.includes('application/json');
+  const workerUrl = (env.WORKER_URL || url.origin).replace(/\/+$/, '');
+
+  // 1. Simpan workerUrl ke KV jika ada binding
+  if (env.TEMPMAIL_KV) {
+    try {
+      await env.TEMPMAIL_KV.put('config:workerUrl', workerUrl);
+    } catch (e) {
+      console.warn('Gagal menyimpan config:workerUrl ke KV:', e);
+    }
+  }
+
+  // 2. Validasi ketersediaan TELEGRAM_BOT_TOKEN
+  if (!env.TELEGRAM_BOT_TOKEN) {
+    const errorMsg = 'Variabel TELEGRAM_BOT_TOKEN belum disetel di Cloudflare Worker Settings > Variables and Secrets.';
+    if (isJson) {
+      return jsonResponse({ ok: false, error: errorMsg }, 400);
+    }
+    return new Response(renderSetupErrorHtml(workerUrl, errorMsg), {
+      status: 400,
+      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    });
+  }
+
+  try {
+    // 3. Ambil profil bot (getMe)
+    const meRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getMe`);
+    const meData = await meRes.json().catch(() => ({}));
+
+    // 4. Set Webhook ke Worker URL
+    const webhookPayload = {
+      url: workerUrl,
+      allowed_updates: ['message', 'callback_query'],
+    };
+    if (env.WEBHOOK_SECRET) {
+      webhookPayload.secret_token = env.WEBHOOK_SECRET;
+    }
+    const whRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/setWebhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(webhookPayload),
+    });
+    const whData = await whRes.json().catch(() => ({}));
+
+    if (!whData.ok) {
+      const errorMsg = whData.description || 'Telegram menolak pendaftaran webhook.';
+      if (isJson) {
+        return jsonResponse({ ok: false, error: errorMsg, webhook: whData }, 400);
+      }
+      return new Response(renderSetupErrorHtml(workerUrl, errorMsg), {
+        status: 400,
+        headers: { 'Content-Type': 'text/html; charset=utf-8' },
+      });
+    }
+
+    // 5. Daftarkan Tombol Menu Mini App (setChatMenuButton)
+    let menuOk = false;
+    try {
+      const menuRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/setChatMenuButton`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          menu_button: {
+            type: 'web_app',
+            text: 'Mini App',
+            web_app: { url: workerUrl },
+          },
+        }),
+      });
+      const menuJson = await menuRes.json().catch(() => ({}));
+      menuOk = Boolean(menuJson.ok);
+    } catch {}
+
+    // 6. Daftarkan Perintah Bawaan Bot (setMyCommands)
+    let cmdOk = false;
+    try {
+      const cmdRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/setMyCommands`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          commands: [
+            { command: 'new', description: 'Buat alamat email sementara baru' },
+            { command: 'list', description: 'Lihat semua alamat aktif kamu' },
+            { command: 'inbox', description: 'Lihat riwayat semua email yang pernah masuk' },
+            { command: 'delete', description: 'Hapus alamat email tertentu' },
+            { command: 'deleteall', description: 'Hapus semua alamat sekaligus' },
+            { command: 'donasi', description: 'Dukung operasional bot' },
+            { command: 'help', description: 'Bantuan & panduan penggunaan' },
+          ],
+        }),
+      });
+      const cmdJson = await cmdRes.json().catch(() => ({}));
+      cmdOk = Boolean(cmdJson.ok);
+    } catch {}
+
+    if (isJson) {
+      return jsonResponse({
+        ok: true,
+        bot: meData.result || null,
+        webhook: whData,
+        menuButton: menuOk,
+        commands: cmdOk,
+        workerUrl,
+      });
+    }
+
+    const html = renderSetupSuccessHtml({
+      bot: meData.result || {},
+      workerUrl,
+      hasSecret: Boolean(env.WEBHOOK_SECRET),
+      domain: env.TEMPMAIL_DOMAIN || '',
+      menuOk,
+      cmdOk,
+    });
+
+    return new Response(html, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-cache',
+      },
+    });
+  } catch (err) {
+    if (isJson) {
+      return jsonResponse({ ok: false, error: err.message || 'Internal Server Error' }, 500);
+    }
+    return new Response(renderSetupErrorHtml(workerUrl, err.message), {
+      status: 500,
+      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    });
+  }
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderSetupSuccessHtml({ bot, workerUrl, hasSecret, domain, menuOk, cmdOk }) {
+  const botName = escapeHtml(bot.first_name || 'Vex Temp Mail Bot');
+  const botUsername = escapeHtml(bot.username || 'bot');
+  const safeWorkerUrl = escapeHtml(workerUrl);
+  const safeDomain = escapeHtml(domain || '(Belum disetel)');
+
+  return `<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Setup Berhasil — Vex Temp Mail</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #07090e;
+      --card-bg: rgba(18, 24, 38, 0.7);
+      --card-border: rgba(56, 189, 248, 0.2);
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-grad: linear-gradient(135deg, #38bdf8 0%, #818cf8 50%, #c084fc 100%);
+      --success: #10b981;
+      --success-glow: rgba(16, 185, 129, 0.25);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg);
+      background-image: 
+        radial-gradient(circle at 15% 15%, rgba(56, 189, 248, 0.12) 0%, transparent 40%),
+        radial-gradient(circle at 85% 80%, rgba(129, 140, 248, 0.12) 0%, transparent 45%);
+      color: var(--text);
+      font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      line-height: 1.5;
+    }
+    .container {
+      width: 100%;
+      max-width: 580px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border-radius: 28px;
+      padding: 40px 36px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6), 0 0 30px rgba(56, 189, 248, 0.15);
+      position: relative;
+      overflow: hidden;
+    }
+    .container::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      background: var(--accent-grad);
+    }
+    .badge-wrap {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 24px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 16px;
+      border-radius: 9999px;
+      background: rgba(16, 185, 129, 0.12);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: #34d399;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+    }
+    .badge-dot {
+      width: 8px;
+      height: 8px;
+      background: #10b981;
+      border-radius: 50%;
+      box-shadow: 0 0 10px #10b981;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.85); }
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+    .title {
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      background: linear-gradient(180deg, #ffffff 0%, #cbd5e1 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 8px;
+    }
+    .subtitle {
+      font-size: 15px;
+      color: var(--text-muted);
+    }
+    .bot-card {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 20px;
+      padding: 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .bot-avatar {
+      width: 52px;
+      height: 52px;
+      border-radius: 16px;
+      background: var(--accent-grad);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 26px;
+      box-shadow: 0 8px 16px rgba(56, 189, 248, 0.3);
+      flex-shrink: 0;
+    }
+    .bot-meta {
+      flex: 1;
+      min-width: 0;
+    }
+    .bot-name {
+      font-size: 17px;
+      font-weight: 700;
+      color: #fff;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .bot-handle {
+      font-size: 14px;
+      color: var(--accent);
+      font-family: 'JetBrains Mono', monospace;
+      text-decoration: none;
+    }
+    .bot-handle:hover {
+      text-decoration: underline;
+    }
+    .status-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 30px;
+    }
+    .status-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 14px;
+      font-size: 14px;
+    }
+    .status-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--text);
+      font-weight: 500;
+    }
+    .status-icon {
+      font-size: 16px;
+    }
+    .status-pill {
+      font-size: 12px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 8px;
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.25);
+    }
+    .actions {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 14px 24px;
+      border-radius: 14px;
+      font-size: 15px;
+      font-weight: 700;
+      text-decoration: none;
+      transition: all 0.2s ease;
+      cursor: pointer;
+    }
+    .btn-primary {
+      background: var(--accent-grad);
+      color: #04101e;
+      box-shadow: 0 10px 20px -5px rgba(56, 189, 248, 0.4);
+    }
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 14px 24px -5px rgba(56, 189, 248, 0.5);
+    }
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.05);
+      color: #e2e8f0;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.09);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+    .footer-note {
+      text-align: center;
+      font-size: 12px;
+      color: #64748b;
+      margin-top: 24px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="badge-wrap">
+      <div class="badge">
+        <span class="badge-dot"></span>
+        Konfigurasi Otomatis Berhasil
+      </div>
+    </div>
+
+    <div class="header">
+      <h1 class="title">Bot Telegram Aktif!</h1>
+      <p class="subtitle">Webhook Telegram telah berhasil disambungkan ke Worker ini.</p>
+    </div>
+
+    <div class="bot-card">
+      <div class="bot-avatar">🤖</div>
+      <div class="bot-meta">
+        <div class="bot-name">${botName}</div>
+        <a href="https://t.me/${botUsername}" class="bot-handle" target="_blank" rel="noopener">@${botUsername}</a>
+      </div>
+    </div>
+
+    <div class="status-list">
+      <div class="status-item">
+        <div class="status-left">
+          <span class="status-icon">🔗</span>
+          <span>Webhook Telegram</span>
+        </div>
+        <span class="status-pill">Tersambung</span>
+      </div>
+      <div class="status-item">
+        <div class="status-left">
+          <span class="status-icon">📱</span>
+          <span>Tombol Menu Mini App</span>
+        </div>
+        <span class="status-pill">${menuOk ? 'Aktif' : 'Tersimpan'}</span>
+      </div>
+      <div class="status-item">
+        <div class="status-left">
+          <span class="status-icon">⚡</span>
+          <span>Menu Perintah Chat</span>
+        </div>
+        <span class="status-pill">${cmdOk ? 'Tersinkronisasi' : 'Standar'}</span>
+      </div>
+      <div class="status-item">
+        <div class="status-left">
+          <span class="status-icon">🌐</span>
+          <span>Domain Catch-All</span>
+        </div>
+        <span class="status-pill" style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">${safeDomain}</span>
+      </div>
+    </div>
+
+    <div class="actions">
+      <a href="https://t.me/${botUsername}" class="btn btn-primary" target="_blank" rel="noopener">
+        <span>🤖</span>
+        <span>Buka Bot di Telegram</span>
+      </a>
+      <a href="${safeWorkerUrl}" class="btn btn-secondary" target="_blank" rel="noopener">
+        <span>📱</span>
+        <span>Buka Web / Mini App</span>
+      </a>
+    </div>
+
+    <p class="footer-note">
+      URL Worker: <code>${safeWorkerUrl}</code><br>
+      Anda tidak perlu menjalankan perintah setWebhook manual lagi.
+    </p>
+  </div>
+</body>
+</html>`;
+}
+
+function renderSetupErrorHtml(workerUrl, errorMsg) {
+  const safeWorkerUrl = escapeHtml(workerUrl);
+  const safeError = escapeHtml(errorMsg);
+
+  return `<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Setup Gagal — Vex Temp Mail</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #07090e;
+      --card-bg: rgba(26, 18, 24, 0.75);
+      --card-border: rgba(239, 68, 68, 0.25);
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .container {
+      width: 100%;
+      max-width: 540px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      backdrop-filter: blur(24px);
+      border-radius: 28px;
+      padding: 36px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 30px rgba(239, 68, 68, 0.15);
+      text-align: center;
+    }
+    .icon { font-size: 48px; margin-bottom: 16px; }
+    .title { font-size: 24px; font-weight: 800; color: #f87171; margin-bottom: 8px; }
+    .desc { font-size: 14px; color: var(--text-muted); margin-bottom: 24px; }
+    .error-box {
+      background: rgba(239, 68, 68, 0.08);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+      border-radius: 14px;
+      padding: 16px;
+      color: #fca5a5;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      text-align: left;
+      margin-bottom: 24px;
+      word-break: break-all;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 24px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.08);
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .btn:hover { background: rgba(255, 255, 255, 0.14); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="icon">⚠️</div>
+    <h1 class="title">Setup Belum Selesai</h1>
+    <p class="desc">Terjadi kendala saat menyambungkan Webhook Telegram ke Worker.</p>
+    <div class="error-box">${safeError}</div>
+    <a href="/setup" class="btn">🔄 Coba Lagi</a>
+  </div>
+</body>
+</html>`;
 }
 
 function renderMiniAppResponse(env) {
