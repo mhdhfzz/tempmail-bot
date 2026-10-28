@@ -30,6 +30,11 @@ export default {
       });
     }
 
+    // Public REST API (API Key) Router — cek dulu sebelum Mini App API
+    if (url.pathname === '/api/v1' || url.pathname.startsWith('/api/v1/')) {
+      return handlePublicApiRequest(request, env, url);
+    }
+
     // Mini App REST API Router
     if (url.pathname.startsWith('/api/')) {
       return handleApiRequest(request, env, ctx, url);
@@ -479,6 +484,12 @@ async function handleTelegramMessage(msg, env) {
         break;
       }
       await handleBroadcastCommand(env, chatId, arg);
+      break;
+    }
+
+    case '/apikey':
+    case '/apikeys': {
+      await handleApiKeyCommand(env, chatId, arg);
       break;
     }
 
@@ -2026,6 +2037,10 @@ function viewAdminHelp() {
     `  Upload gambar QRIS donasi baru via chat Telegram.\n` +
     `• <code>/setupapp &lt;url&gt;</code>\n` +
     `  Atur tombol Menu Mini App di pojok kiri bawah chat pengguna.\n` +
+    `• <code>/apikey create &lt;nama&gt;</code>\n` +
+    `  Buat API Key untuk akses REST API publik (aplikasi pihak ketiga).\n` +
+    `• <code>/apikey docs</code>\n` +
+    `  Panduan lengkap endpoint API publik.\n` +
     `• <code>/admin</code> (alias <code>/adminhelp</code>)\n` +
     `  Membuka kembali panel panduan admin ini.\n\n` +
     `<i>Pilih tombol aksi cepat di bawah untuk eksekusi instan:</i>`;
@@ -3327,10 +3342,12 @@ const CORS_HEADERS = {
 };
 
 function jsonResponse(data, status = 200) {
-  return new Response(JSON.stringify(data), {
+  // Unescape \u003C/\u003E agar karakter < > tampil normal di raw viewer (tetap JSON valid)
+  const body = JSON.stringify(data).replace(/\\u003C/g, '<').replace(/\\u003E/g, '>');
+  return new Response(body, {
     status,
     headers: {
-      'Content-Type': 'application/json',
+      'Content-Type': 'application/json; charset=utf-8',
       ...CORS_HEADERS,
     },
   });
@@ -3387,6 +3404,258 @@ async function authenticateApiRequest(request, env) {
     chatId,
     isAdmin,
   };
+}
+
+// ============================================================
+// Public REST API (v1) — untuk aplikasi pihak ketiga
+// Auth: header `Authorization: Bearer <API_KEY>`
+// Key dibuat via perintah bot: /apikey create <nama>
+// ============================================================
+const API_KEY_PREFIX = 'vexk_';
+
+function generateApiKey() {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  const str = Array.from(bytes, (b) => b.toString(36).padStart(2, '0')).join('');
+  return API_KEY_PREFIX + str.slice(0, 32);
+}
+
+function hashApiKey(key) {
+  // ponytail: SHA-256 sederhana cukup untuk KV lookup; rotasi key via /apikey revoke
+  return btoa(String.fromCharCode(...new TextEncoder().encode(key))).replace(/=+$/, '');
+}
+
+async function getApiKeyRecord(env, key) {
+  const raw = await env.TEMPMAIL_KV.get(`apikey:${hashApiKey(key)}`);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+async function resolveApiKeyToChatId(env, request) {
+  const header = request.headers.get('Authorization') || '';
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  if (!match) return { ok: false, error: 'Header Authorization: Bearer <API_KEY> diperlukan.', status: 401 };
+  const record = await getApiKeyRecord(env, match[1].trim());
+  if (!record) return { ok: false, error: 'API Key tidak valid atau sudah dicabut.', status: 401 };
+  return { ok: true, chatId: record.chatId, name: record.name };
+}
+
+async function handlePublicApiRequest(request, env, url) {
+  const path = url.pathname.replace(/^\/api\/v1\/?/, '/');
+
+  // Dokumentasi mandiri: GET /api/v1
+  if ((path === '/' || path === '') && request.method === 'GET') {
+    return jsonResponse({
+      ok: true,
+      name: 'VexTempMail Public API',
+      version: '1.0',
+      auth: 'Authorization: Bearer [API_KEY] (buat via bot: /apikey create [nama])',
+      endpoints: {
+        'GET /api/v1/addresses': 'Daftar alamat email aktif milik pemilik API key',
+        'POST /api/v1/addresses': 'Buat alamat baru. Body JSON: {mode:"auto"|"custom", customName?, domain?, durationHours?}',
+        'DELETE /api/v1/addresses?address=...': 'Hapus alamat (atau ?all=true untuk semua)',
+        'GET /api/v1/inbox': 'Daftar email masuk. Query opsional: ?address=...&limit=...&since=timestamp',
+        'GET /api/v1/inbox/[id]': 'Detail satu email (body + html)',
+        'DELETE /api/v1/inbox?address=...': 'Hapus email (id atau address, clearAll=true)',
+        'GET /api/v1/domains': 'Daftar domain yang tersedia',
+      },
+    });
+  }
+
+  const auth = await resolveApiKeyToChatId(env, request);
+  if (!auth.ok) {
+    return jsonResponse({ ok: false, error: auth.error }, auth.status);
+  }
+  const chatId = auth.chatId;
+
+  try {
+    // GET /api/v1/addresses
+    if (path === '/addresses' && request.method === 'GET') {
+      const [addresses, domains] = await Promise.all([getUserAddresses(env, chatId), getDomainList(env)]);
+      return jsonResponse({ ok: true, addresses, domains });
+    }
+
+    // POST /api/v1/addresses
+    if (path === '/addresses' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const durationHours = parseInt(body.durationHours, 10);
+      const chosenDuration = DURATION_OPTIONS_HOURS.includes(durationHours) ? durationHours : 24;
+      let customAlias = null;
+      if (body.mode === 'custom') {
+        customAlias = sanitizeAlias(body.customName || '');
+        if (!customAlias) {
+          return jsonResponse({ ok: false, error: 'Alias harus 3-20 karakter alfanumerik (huruf, angka, titik, strip).' }, 400);
+        }
+      }
+      const domain = body.domain ? sanitizeDomain(body.domain) : null;
+      const result = await createNewAddress(env, chatId, customAlias, chosenDuration * 3600, domain);
+      if (result.error === 'limit') {
+        return jsonResponse({ ok: false, error: `Batas maksimum ${MAX_ADDRESSES_PER_USER} alamat tercapai.` }, 400);
+      }
+      if (result.error === 'taken') {
+        return jsonResponse({ ok: false, error: 'Alamat sudah digunakan.' }, 400);
+      }
+      await incrementCounter(env, 'stats:totalAddressesCreated');
+      const addresses = await getUserAddresses(env, chatId);
+      return jsonResponse({ ok: true, address: result.address, createdAt: result.createdAt, expiresAt: result.createdAt + chosenDuration * 3600 * 1000, addresses }, 201);
+    }
+
+    // DELETE /api/v1/addresses
+    if (path === '/addresses' && request.method === 'DELETE') {
+      const all = url.searchParams.get('all') === 'true';
+      const address = url.searchParams.get('address');
+      if (all) {
+        await deleteAllAddresses(env, chatId);
+        return jsonResponse({ ok: true, addresses: [] });
+      }
+      if (!address) return jsonResponse({ ok: false, error: 'Parameter address atau all=true diperlukan.' }, 400);
+      const success = await deleteAddress(env, chatId, address);
+      if (!success) return jsonResponse({ ok: false, error: 'Alamat tidak ditemukan.' }, 404);
+      return jsonResponse({ ok: true, addresses: await getUserAddresses(env, chatId) });
+    }
+
+    // GET /api/v1/inbox — dukung address, since, limit
+    if (path === '/inbox' && request.method === 'GET') {
+      const allInbox = await getInbox(env, chatId);
+      let filtered = allInbox;
+      const address = url.searchParams.get('address');
+      const since = parseInt(url.searchParams.get('since'), 10);
+      const limit = parseInt(url.searchParams.get('limit'), 10);
+      if (address) filtered = filtered.filter((i) => i.address === address);
+      if (!Number.isNaN(since)) filtered = filtered.filter((i) => (i.receivedAt || 0) > since);
+      if (!Number.isNaN(parseInt(url.searchParams.get('limit'), 10))) {
+        filtered = filtered.slice(0, parseInt(url.searchParams.get('limit'), 10));
+      }
+      return jsonResponse({ ok: true, count: filtered.length, inbox: filtered });
+    }
+
+    // GET /api/v1/inbox/[id]
+    const inboxIdMatch = path.match(/^\/inbox\/([^/]+)$/);
+    if (inboxIdMatch && request.method === 'GET') {
+      const allInbox = await getInbox(env, chatId);
+      const item = allInbox.find((i) => i.id === inboxIdMatch[1]);
+      if (!item) return jsonResponse({ ok: false, error: 'Email tidak ditemukan.' }, 404);
+      return jsonResponse({ ok: true, email: item });
+    }
+
+    // DELETE /api/v1/inbox
+    if (path === '/inbox' && request.method === 'DELETE') {
+      const id = url.searchParams.get('id');
+      const address = url.searchParams.get('address');
+      const clearAll = url.searchParams.get('clearAll') === 'true';
+      if (clearAll) {
+        await env.TEMPMAIL_KV.delete(`inbox:${chatId}`);
+        return jsonResponse({ ok: true, inbox: [] });
+      }
+      const current = await getInbox(env, chatId);
+      let updated = current;
+      if (id) {
+        updated = current.filter((i) => i.id !== id);
+      } else if (address) {
+        updated = current.filter((i) => i.address !== address);
+      } else {
+        return jsonResponse({ ok: false, error: 'Parameter id, address, atau clearAll=true diperlukan.' }, 400);
+      }
+      await env.TEMPMAIL_KV.put(`inbox:${chatId}`, JSON.stringify(updated), { expirationTtl: INBOX_TTL_SECONDS });
+      return jsonResponse({ ok: true, deleted: current.length - updated.length, inbox: updated });
+    }
+
+    // GET /api/v1/domains
+    if (path === '/domains' && request.method === 'GET') {
+      const domains = await getDomainList(env);
+      return jsonResponse({ ok: true, domains });
+    }
+
+    return jsonResponse({ ok: false, error: 'Endpoint tidak ditemukan. GET /api/v1 untuk daftar endpoint.' }, 404);
+  } catch (err) {
+    console.error('Public API Error:', err);
+    return jsonResponse({ ok: false, error: err.message || 'Internal Server Error' }, 500);
+  }
+}
+
+// --- Perintah Bot: /apikey ---
+function formatRelativeTimeServer(timestamp) {
+  const diffSec = Math.floor((Date.now() - timestamp) / 1000);
+  if (diffSec < 60) return 'baru saja';
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin} menit lalu`;
+  const diffHour = Math.floor(diffMin / 60);
+  if (diffHour < 24) return `${diffHour} jam lalu`;
+  return `${Math.floor(diffHour / 24)} hari lalu`;
+}
+
+async function handleApiKeyCommand(env, chatId, arg) {
+  const [action, ...rest] = (arg || '').trim().split(/\s+/);
+  const name = rest.join(' ') || 'default';
+
+  if (action === 'create') {
+    const key = generateApiKey();
+    const record = { chatId: String(chatId), name, createdAt: Date.now() };
+    await env.TEMPMAIL_KV.put(`apikey:${hashApiKey(key)}`, JSON.stringify(record));
+    const listRaw = await env.TEMPMAIL_KV.get(`apikeylist:${chatId}`);
+    const list = listRaw ? JSON.parse(listRaw) : [];
+    list.push({ hash: hashApiKey(key), name, createdAt: record.createdAt });
+    await env.TEMPMAIL_KV.put(`apikeylist:${chatId}`, JSON.stringify(list));
+    await sendHtmlMessage(env, chatId,
+      `🔑 <b>API Key Berhasil Dibuat!</b>\n\n` +
+      `<b>Nama:</b> ${escapeHtml(name)}\n` +
+      `<b>Key:</b> <code>${key}</code>\n\n` +
+      `⚠️ <b>Simpan sekarang!</b> Key ini hanya ditampilkan sekali.\n\n` +
+      `<b>Contoh penggunaan:</b>\n` +
+      `<code>curl -H "Authorization: Bearer ${key}" https://worker-anda.workers.dev/api/v1/addresses</code>\n\n` +
+      `Kirim <code>/apikey docs</code> untuk panduan lengkap endpoint.`);
+    return;
+  }
+
+  if (action === 'revoke') {
+    const listRaw = await env.TEMPMAIL_KV.get(`apikeylist:${chatId}`);
+    const list = listRaw ? JSON.parse(listRaw) : [];
+    const target = list.find((k) => k.name === name);
+    if (!target) {
+      await sendHtmlMessage(env, chatId, `❌ API Key dengan nama <code>${escapeHtml(name)}</code> tidak ditemukan.`);
+      return;
+    }
+    await env.TEMPMAIL_KV.delete(`apikey:${target.hash}`);
+    await env.TEMPMAIL_KV.put(`apikeylist:${chatId}`, JSON.stringify(list.filter((k) => k.name !== name)));
+    await sendHtmlMessage(env, chatId, `🗑️ API Key <code>${escapeHtml(name)}</code> telah dicabut.`);
+    return;
+  }
+
+  if (action === 'list') {
+    const listRaw = await env.TEMPMAIL_KV.get(`apikeylist:${chatId}`);
+    const list = listRaw ? JSON.parse(listRaw) : [];
+    if (list.length === 0) {
+      await sendHtmlMessage(env, chatId, 'Belum ada API Key. Buat dengan <code>/apikey create &lt;nama&gt;</code>');
+      return;
+    }
+    const rows = list.map((k) => `• <b>${escapeHtml(k.name)}</b> — dibuat ${formatRelativeTimeServer(k.createdAt)}`).join('\n');
+    await sendHtmlMessage(env, chatId, `🔑 <b>API Key Anda:</b>\n\n${rows}`);
+    return;
+  }
+
+  // Help / docs
+  const help = `📚 <b>API Publik VexTempMail</b>\n\n` +
+    `<b>Perintah:</b>\n` +
+    `<code>/apikey create [nama]</code> — Buat key baru\n` +
+    `<code>/apikey list</code> — Lihat semua key\n` +
+    `<code>/apikey revoke [nama]</code> — Cabut key\n\n` +
+    `<b>Auth:</b> kirim header <code>Authorization: Bearer [API_KEY]</code>\n\n` +
+    `<b>Endpoint:</b>\n` +
+    `<code>GET  /api/v1/addresses</code> — Daftar alamat\n` +
+    `<code>POST /api/v1/addresses</code> — Buat alamat\n` +
+    `<i>Body: {"mode":"auto"} atau {"mode":"custom","customName":"nama","domain":"x.com","durationHours":24}</code>\n` +
+    `<code>DELETE /api/v1/addresses?address=x@y.com</code>\n` +
+    `<code>GET  /api/v1/inbox</code> — Email masuk (?address=&amp;since=&amp;limit=)\n` +
+    `<code>GET  /api/v1/inbox/[id]</code> — Detail email\n` +
+    `<code>DELETE /api/v1/inbox?id=...</code> — Hapus email\n` +
+    `<code>GET  /api/v1/domains</code> — Daftar domain\n\n` +
+    `<b>Contoh:</b>\n` +
+    `<code>curl -H "Authorization: Bearer vexk_..." https://worker.dev/api/v1/inbox</code>`;
+  await sendHtmlMessage(env, chatId, help);
 }
 
 async function handleApiRequest(request, env, ctx, url) {
@@ -3788,6 +4057,7 @@ async function handleSetupRequest(request, env, ctx, url) {
             { command: 'delete', description: 'Hapus alamat email tertentu' },
             { command: 'deleteall', description: 'Hapus semua alamat sekaligus' },
             { command: 'donasi', description: 'Dukung operasional bot' },
+            { command: 'apikey', description: 'Kelola API Key untuk integrasi aplikasi lain' },
             { command: 'help', description: 'Bantuan & panduan penggunaan' },
           ],
         }),
@@ -5023,10 +5293,18 @@ function renderMiniAppHtml(env) {
         <button class="btn btn-glass btn-sm" id="btn-clear-inbox">Hapus Semua</button>
       </div>
 
-      <div id="inbox-filter-bar" style="margin-bottom: 12px; display: none;">
-        <select class="form-select" id="inbox-addr-filter">
-          <option value="">Semua Alamat</option>
-        </select>
+      <div id="inbox-filter-bar" style="margin-bottom: 12px;">
+        <input type="text" class="form-input" id="inbox-search" placeholder="🔍 Cari pengirim / subjek / OTP..." style="margin-bottom: 8px;">
+        <div style="display: flex; gap: 8px;">
+          <select class="form-select" id="inbox-addr-filter" style="flex: 1;">
+            <option value="">Semua Alamat</option>
+          </select>
+          <select class="form-select" id="inbox-otp-filter" style="flex: 1;">
+            <option value="">Semua Email</option>
+            <option value="otp">🔑 Ber-OTP</option>
+            <option value="link">🔗 Verifikasi</option>
+          </select>
+        </div>
       </div>
 
       <div id="inbox-list">
@@ -5235,6 +5513,8 @@ function renderMiniAppHtml(env) {
       createMode: 'auto',
       selectedDuration: 24,
       filterAddress: '',
+      filterOtp: '',
+      searchText: '',
     };
 
     function haptic(type = 'light') {
@@ -5358,6 +5638,7 @@ function renderMiniAppHtml(env) {
 
         renderAddresses();
         renderInbox();
+        populateInboxFilter();
         populateDomainSelects();
 
         // Jika mode tamu tapi Telegram SDK tersedia, coba re-fetch sekali lagi setelah 400ms jika initData terlambat muncul
@@ -5604,6 +5885,21 @@ function renderMiniAppHtml(env) {
     });
 
     // --- Inbox & Reader (Gmail-Style) ---
+    function getFilteredInbox() {
+      return state.inbox.filter(item => {
+        if (state.filterAddress && item.address !== state.filterAddress) return false;
+        if (state.filterOtp === 'otp' && !item.primaryOtp) return false;
+        if (state.filterOtp === 'link' && !item.verificationLink) return false;
+        if (state.searchText) {
+          const q = state.searchText.toLowerCase();
+          const hay = [item.from, item.subject, item.snippet, item.primaryOtp, item.address]
+            .filter(Boolean).join(' ').toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+    }
+
     function renderInbox() {
       const container = document.getElementById('inbox-list');
       const badge = document.getElementById('badge-inbox');
@@ -5639,7 +5935,23 @@ function renderMiniAppHtml(env) {
         return;
       }
 
-      container.innerHTML = state.inbox.map(item => {
+      const filtered = getFilteredInbox();
+      if (filtered.length === 0) {
+        const hasFilter = state.filterAddress || state.filterOtp || state.searchText;
+        container.innerHTML = \`
+          <div class="empty-state">
+            <div class="empty-icon">\${hasFilter ? '🔍' : '📭'}</div>
+            <div class="empty-title">\${hasFilter ? 'Tidak Ada Hasil' : 'Kotak Masuk Kosong'}</div>
+            <div class="empty-desc">\${hasFilter
+              ? 'Tidak ada email yang cocok dengan filter/pencarian. Coba ubah kata kunci atau reset filter.'
+              : 'Belum ada email yang masuk. Gunakan alamat email aktif Anda untuk menerima pesan.'}</div>
+            \${hasFilter ? '<button class="btn btn-glass btn-sm" onclick="resetInboxFilters()" style="margin-top: 12px;">Reset Filter</button>' : ''}
+          </div>
+        \`;
+        return;
+      }
+
+      container.innerHTML = filtered.map(item => {
         const timeStr = item.receivedAt ? formatRelativeTime(item.receivedAt) : 'Baru saja';
         return \`
           <div class="inbox-item" onclick="openEmailReader('\${item.id}')">
@@ -5653,6 +5965,26 @@ function renderMiniAppHtml(env) {
           </div>
         \`;
       }).join('');
+    }
+
+    window.resetInboxFilters = function () {
+      state.filterAddress = '';
+      state.filterOtp = '';
+      state.searchText = '';
+      document.getElementById('inbox-addr-filter').value = '';
+      document.getElementById('inbox-otp-filter').value = '';
+      document.getElementById('inbox-search').value = '';
+      renderInbox();
+    };
+
+    function populateInboxFilter() {
+      const sel = document.getElementById('inbox-addr-filter');
+      const prev = state.filterAddress;
+      const addrs = [...new Set(state.inbox.map(i => i.address).filter(Boolean))];
+      sel.innerHTML = '<option value="">Semua Alamat</option>' +
+        addrs.map(a => \`<option value="\${escapeHtml(a)}">\${escapeHtml(a)}</option>\`).join('');
+      sel.value = prev;
+      if (sel.value !== prev) { sel.value = ''; state.filterAddress = ''; }
     }
 
     function openEmailReader(id) {
@@ -5784,6 +6116,28 @@ function renderMiniAppHtml(env) {
     });
 
     document.getElementById('reader-back-btn').addEventListener('click', () => switchView('inbox'));
+
+    // --- Inbox Filter & Search Wiring ---
+    let searchTimer;
+    document.getElementById('inbox-search').addEventListener('input', (e) => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        state.searchText = e.target.value.trim();
+        renderInbox();
+      }, 250);
+    });
+
+    document.getElementById('inbox-addr-filter').addEventListener('change', (e) => {
+      state.filterAddress = e.target.value;
+      haptic('light');
+      renderInbox();
+    });
+
+    document.getElementById('inbox-otp-filter').addEventListener('change', (e) => {
+      state.filterOtp = e.target.value;
+      haptic('light');
+      renderInbox();
+    });
 
     document.getElementById('btn-copy-reader-otp').addEventListener('click', () => {
       if (state.currentEmail?.primaryOtp) {

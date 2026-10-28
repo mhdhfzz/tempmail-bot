@@ -228,7 +228,70 @@ Agar daftar perintah otomatis muncul di Telegram:
 - `/setqris` — Perbarui gambar QRIS donasi langsung via chat (cukup kirim foto setelah menjalankan perintah).
 - `/domains` — Lihat daftar semua domain yang terhubung.
 - `/adddomain <domain>` — Tambahkan domain baru tanpa perlu deploy ulang.
+- `/apikey <nama>` — Buat API Key untuk akses REST API publik (lihat [API Publik](#api-publik-rest-v1)).
 - `/removedomain <domain>` — Hapus domain dari daftar sistem.
+
+---
+
+## API Publik (REST v1)
+
+Bot menyediakan REST API publik agar aplikasi lain (webhook, script, integrasi otomasi) bisa menggunakan temp-mail secara programatik.
+
+### Autentikasi
+1. Kirim `/apikey create <nama>` ke bot (misal `/apikey create myapp`).
+2. Bot membalas API Key (misal `vexk_xxxx...`). **Simpan baik-baik, hanya tampil sekali.**
+3. Kirim header `Authorization: Bearer <API_KEY>` pada setiap request.
+
+Kelola key: `/apikey list` untuk lihat semua, `/apikey revoke <nama>` untuk cabut.
+
+### Endpoint
+
+| Method | Endpoint | Deskripsi |
+|---|---|---|
+| `GET` | `/api/v1` | Dokumentasi mandiri (tanpa auth) |
+| `GET` | `/api/v1/addresses` | Daftar alamat aktif + domain tersedia |
+| `POST` | `/api/v1/addresses` | Buat alamat baru |
+| `DELETE` | `/api/v1/addresses?address=...` | Hapus alamat (`?all=true` untuk semua) |
+| `GET` | `/api/v1/inbox` | Email masuk (`?address=&since=&limit=`) |
+| `GET` | `/api/v1/inbox/<id>` | Detail satu email (body + HTML) |
+| `DELETE` | `/api/v1/inbox` | Hapus email (`?id=` atau `?address=` atau `?clearAll=true`) |
+| `GET` | `/api/v1/domains` | Daftar domain tersedia |
+
+### Contoh
+
+Buat alamat baru:
+```bash
+curl -X POST https://<url-worker-anda>/api/v1/addresses \
+  -H "Authorization: Bearer vexk_xxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"auto","durationHours":24}'
+```
+
+Polling email masuk (mis. menunggu OTP):
+```bash
+curl -H "Authorization: Bearer vexk_xxxx" \
+  "https://<url-worker-anda>/api/v1/inbox?address=user123@test.com&limit=5"
+```
+
+Contoh response:
+```json
+{
+  "ok": true,
+  "count": 1,
+  "inbox": [{
+    "id": "msg_1729..._x7k2",
+    "address": "user123@test.com",
+    "from": "no-reply@github.com",
+    "subject": "Verify your email",
+    "primaryOtp": "482913",
+    "verificationLink": "https://github.com/verify?token=...",
+    "snippet": "Your verification code is 482913...",
+    "receivedAt": 1730100000000
+  }]
+}
+```
+
+> 💡 Semua endpoint mengembalikan JSON dengan struktur `{ok: true/false, ...}`. Error auth = HTTP 401, error validasi = HTTP 400.
 
 ---
 
