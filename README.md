@@ -1,22 +1,33 @@
 # Bot Temp-Mail Telegram (Cloudflare Workers)
 
-Bot Telegram untuk membuat alamat email sementara (*temp mail*), di mana seluruh email yang masuk langsung diteruskan ke chat Telegram secara *real-time* — lengkap dengan format teks kaya (*Rich Messages*), tabel data asli, album foto tanpa batas, dan lampiran file.
+Bot Telegram untuk membuat alamat email sementara (*temp mail*), di mana seluruh email yang masuk langsung diteruskan ke chat Telegram secara *real-time* — lengkap dengan ekstraksi otomatis kode OTP / verifikasi, fitur 1-tap copy, tautan konfirmasi, pembersihan total tag HTML, dan penerusan lampiran file.
 
 Berjalan di atas **Cloudflare Workers** (serverless) dan **Cloudflare KV**. Sangat cepat, hemat sumber daya, dan gratis untuk penggunaan pribadi maupun tim kecil tanpa perlu mengelola server.
+
+[![Demo Bot Telegram](https://img.shields.io/badge/Demo%20Bot-@VexTempMail__bot-0088cc?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/VexTempMail_bot)
+
+> 🤖 **Coba Sekarang:** Anda dapat langsung mencoba demo bot ini di Telegram: [@VexTempMail_bot](https://t.me/VexTempMail_bot)
 
 ---
 
 ## Fitur Utama
 
-- **Telegram Rich Messages**: Tabel data asli (`InputRichBlockTable`), heading bertingkat, daftar poin, kutipan, dan garis pemisah. Tabel email (seperti rincian tagihan atau konfirmasi OTP) disajikan rapi sebagai grid asli Telegram.
-- **Album Foto Tanpa Batas**: Seluruh gambar inline pada email dikirimkan otomatis sebagai Album Foto Telegram (`sendMediaGroup`, maks. 10 foto per album) agar chat tetap rapi dan tidak banjir notifikasi.
-- **Fallback HTML Otomatis**: Jika aplikasi Telegram klien belum mendukung Rich Blocks tertentu, sistem otomatis beralih ke rendering HTML aman (termasuk tabel ASCII monospaced berbingkai kotak).
+- **📱 Telegram Mini App (Web App)**: Antarmuka aplikasi web modern bertema **Dark Glassmorphism Adaptif** dengan kartu *frosted glass*, aksen neon cyan/violet, dan umpan balik getaran (*haptic feedback*).
+- **📧 Tampilan Email Asli ala Gmail**: Baca email langsung dalam format aslinya (HTML, tata letak, gambar responsif, tabel, dan tautan) di dalam *sandboxed viewer* seperti aplikasi Gmail, lengkap dengan tombol peralihan instan ke Teks Bersih.
+- **🔐 Pinned Quick-Copy Card OTP**: Kotak masuk dan pembaca email menampilkan kartu neon kode OTP di posisi paling atas dengan tombol salin 1 ketukan dan tombol langsung ke tautan verifikasi.
+- **⏳ Progress Bar & Countdown Timer**: Pantau sisa waktu masa aktif setiap alamat email secara *real-time* dengan visual progress bar dinamis serta tombol perpanjang instan (`+24 Jam`).
+- **Fokus Kode OTP & Verifikasi**: Otomatis mendeteksi kode OTP (4–8 digit angka, format strip `123-456`, dsb) dan menyajikannya paling atas di chat Telegram maupun di Mini App.
+- **Salin Kode 1 Kali Ketuk (1-Tap Copy)**: Kode OTP diformat `<code>OTP</code>` sehingga cukup diketuk 1 kali di HP/PC untuk langsung menyalinnya, ditambah tombol instan `[ 📋 Salin: OTP ]` di keyboard (`copy_text`).
+- **Deteksi Tautan Verifikasi Otomatis**: Otomatis mendeteksi tautan konfirmasi pendaftaran/aktivasi akun (`verify`, `confirm`, `token=`) dan menyediakan tombol sekali klik `[ 🔗 Buka Tautan Verifikasi ]`.
+- **Pembersihan Total Tag HTML di Chat**: Seluruh tag HTML yang mengganggu, header MIME mentah, dan artefak quoted-printable dibersihkan 100% menjadi teks yang rapi dan mudah dibaca di chat Telegram.
 - **Alamat Kustom & Acak Natural**: Buat alamat dengan nama pilihan sendiri atau otomatis dibuatkan nama natural yang mudah dibaca (kombinasi kata & angka pendek).
 - **Masa Aktif Fleksibel**: Pilihan durasi masa aktif alamat (6, 12, 24, 48, hingga 72 jam).
 - **Multi-Domain**: Mendukung lebih dari satu domain email sekaligus.
 - **Lampiran Lengkap**: PDF, dokumen Office, arsip ZIP, dan file lampiran lainnya otomatis diteruskan sebagai dokumen Telegram.
-- **Navigasi Interaktif**: Antarmuka responsif berbasis tombol (*inline keyboard*) tanpa mengotori ruang obrolan (*in-place edit*).
-- **Panel & Notifikasi Admin**: Notifikasi penggunaan real-time, ringkasan statistik bot (`/stats`), ubah QRIS donasi via chat (`/setqris`), serta manajemen domain (`/adddomain`, `/removedomain`).
+- **Riwayat & Navigasi Interaktif**: Antarmuka responsif berbasis tombol (*inline keyboard*) dengan paginasi riwayat email tanpa batas pemotongan teks.
+- **📢 Broadcast Pengumuman Admin**: Kirim pengumuman/informasi terbaru (misal: penambahan domain baru) ke seluruh pengguna bot secara serentak dengan sistem pratinjau (preview), tombol konfirmasi, dan pelaporan statistik.
+- **🛠️ Panel Panduan Admin Terpadu (`/admin`)**: Menu khusus admin yang merangkum seluruh perintah bot dan tombol aksi cepat tanpa perlu membuka catatan manual.
+- **Panel & Notifikasi Admin**: Notifikasi penggunaan real-time, ringkasan statistik bot (`/stats`), ubah QRIS donasi via chat (`/setqris`), setup tombol Mini App (`/setupapp`), serta manajemen domain (`/adddomain`, `/removedomain`).
 
 ---
 
@@ -108,6 +119,7 @@ Masih di tab **Settings** → **Variables and Secrets**, klik **Add** pada **Env
 | `TELEGRAM_BOT_TOKEN` | **Secret / Encrypted** | Token bot yang Anda peroleh dari @BotFather. |
 | `TEMPMAIL_DOMAIN` | **Text / Plaintext** | Domain email Anda (contoh: `domain.com` atau `mail1.com,mail2.com`). |
 | `ADMIN_CHAT_ID` | **Text / Plaintext** *(opsional)* | ID Telegram Anda (cek via [@userinfobot](https://t.me/userinfobot)) untuk menerima laporan admin. |
+| `WORKER_URL` | **Text / Plaintext** *(opsional)* | URL Worker Anda (misal `https://tempmail-bot.username.workers.dev`). Otomatis terdeteksi jika tidak diisi. |
 | `WEBHOOK_SECRET` | **Secret / Encrypted** *(opsional)* | String acak bebas untuk memvalidasi keamanan request Telegram. |
 
 Klik **Save and Deploy** untuk menerapkan perubahan.
@@ -130,7 +142,42 @@ Agar setiap email yang dikirim ke domain Anda diteruskan ke Worker bot:
    *(Jika Anda tidak mengisi `WEBHOOK_SECRET`, hapus bagian `&secret_token=...`)*.
 3. Jika browser menampilkan respon `{"ok":true,"result":true,"description":"Webhook was set"}`, bot Anda sudah aktif!
 
-### 5. Atur Menu Perintah di BotFather (Opsional)
+### 5. Pengaturan Mini App di Telegram (BotFather & Satu Klik)
+
+Terdapat 3 cara praktis untuk mengaktifkan Mini App di bot Anda:
+
+#### Cara 1: Mengatur Tombol Menu Mini App via BotFather (Paling Direkomendasikan)
+Tombol ini akan muncul di pojok kiri bawah kolom obrolan chat bot pengguna:
+1. Buka [@BotFather](https://t.me/BotFather) di Telegram.
+2. Kirim perintah `/setmenubutton` dan pilih bot Anda (misal `@VexTempMail_bot`).
+3. BotFather akan meminta URL Web App, kirimkan URL Worker Anda:
+   ```
+   https://<URL_WORKER_KAMU>
+   ```
+   *(Contoh: `https://tempmail-bot.username.workers.dev`)*.
+4. Masukkan teks untuk tombol tersebut (misal: `Buka Aplikasi` atau `Mini App`).
+5. Selesai! Pengguna sekarang dapat membuka Mini App langsung dari tombol di samping kolom ketik chat.
+
+#### Cara 2: Membuat Mini App Resmi & Direct Link (`t.me/bot/app`) via BotFather
+Memungkinkan Anda memiliki tautan langsung (seperti `t.me/VexTempMail_bot/app`) yang dapat dibagikan ke mana saja:
+1. Buka [@BotFather](https://t.me/BotFather), kirim perintah `/newapp`.
+2. Pilih bot Anda.
+3. Masukkan **Title** (Judul aplikasi): `VexTempMail`
+4. Masukkan **Description** (Deskripsi): `Aplikasi Email Sementara Cepat & Otomatis Tangkap OTP`
+5. Upload foto cover/ikon (format PNG/JPG ukuran 640x360 piksel).
+6. Jika diminta animasi GIF demo, kirim `/empty` jika belum ada.
+7. Masukkan URL Worker Anda: `https://<URL_WORKER_KAMU>`.
+8. Tentukan **Short Name** (misal: `app`).
+9. BotFather akan memberikan tautan direct Mini App: `t.me/<USERNAME_BOT>/app`.
+
+#### Cara 3: Aktivasi Cepat via Chat Bot (Khusus Admin)
+Jika Anda sudah menyetel `ADMIN_CHAT_ID`, cukup kirim perintah berikut di ruang obrolan bot:
+```
+/setupapp
+```
+Bot akan otomatis menghubungi Telegram API untuk mendaftarkan URL Worker saat ini sebagai tombol Menu Mini App tanpa perlu masuk ke BotFather.
+
+### 6. Atur Menu Perintah di BotFather (Opsional)
 Agar daftar perintah otomatis muncul di Telegram:
 1. Chat [@BotFather](https://t.me/BotFather), kirim `/setcommands`, lalu pilih bot Anda.
 2. Tempel daftar berikut:
@@ -159,7 +206,10 @@ Agar daftar perintah otomatis muncul di Telegram:
 
 ### Khusus Admin (Sesuai `ADMIN_CHAT_ID`)
 - **Notifikasi Real-Time**: Menerima pesan instan saat ada pengguna baru, pembuatan/penghapusan alamat, dan email masuk.
+- `/admin` (atau `/adminhelp`) — Buka panel panduan lengkap seluruh perintah khusus admin beserta tombol aksi cepat.
+- `/broadcast <pesan>` (atau `/bc <pesan>`) — Siarkan pengumuman resmi ke seluruh pengguna bot dengan pratinjau pesan, tombol konfirmasi, dan laporan statistik pengiriman.
 - `/stats` — Ringkasan metrik bot dalam tabel (total user, alamat aktif, email diteruskan).
+- `/setupapp` — Daftarkan dan aktifkan tombol Menu Mini App Telegram secara otomatis.
 - `/setqris` — Perbarui gambar QRIS donasi langsung via chat (cukup kirim foto setelah menjalankan perintah).
 - `/domains` — Lihat daftar semua domain yang terhubung.
 - `/adddomain <domain>` — Tambahkan domain baru tanpa perlu deploy ulang.
@@ -169,10 +219,7 @@ Agar daftar perintah otomatis muncul di Telegram:
 
 ## Detail Teknis
 
-- **Telegram Bot API**: Menggunakan metode `sendRichMessage` dan `editMessageText` (`rich_message`) dengan struktur blok:
-  - `InputRichBlockTable` (tabel data multi-kolom bergaris & bergaris belang).
-  - `InputRichBlockSectionHeading` (judul section).
-  - `InputRichBlockList` (daftar berbutir/bernomor).
-  - `InputRichBlockQuote` (blok kutipan isi email).
-  - `InputRichBlockDivider` (garis pemisah antar section).
-- **Pengiriman Media**: Menggunakan `sendMediaGroup` untuk mengelompokkan seluruh gambar inline pada email ke dalam album (maksimal 10 gambar per album) sebelum meneruskan file lampiran dengan `sendDocument`.
+- **Ekstraksi OTP & Tautan Verifikasi**: Menggunakan pola regex cerdas dengan sistem deteksi berlapis (kata kunci konteks, format alfanumerik, format angka berdiri sendiri, serta penyaring *false positive* seperti tahun dan kode status).
+- **Pembersihan HTML**: Menghapus seluruh tag HTML bersarang, skrip, dan gaya, serta mendekode *Quoted-Printable* dan entitas UTF-8 menjadi teks polos yang bersih.
+- **Telegram 1-Tap Copy**: Memanfaatkan tag `<code>` bawaan Telegram yang mendukung salin 1 ketukan pada aplikasi Android, iOS, dan Desktop, didukung tombol interaktif `copy_text` Telegram Bot API 7.0+.
+- **Penerusan File Dokumen**: File lampiran (PDF, arsip, gambar) diteruskan utuh menggunakan `sendDocument` ke chat pengguna.
